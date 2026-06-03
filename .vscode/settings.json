@@ -1,0 +1,5 @@
+{
+  "markdown.mermaid.enabled": false,
+  "markdown.preview.breaks": true,
+  "markdown.preview.security": "allowInsecureContent"
+}

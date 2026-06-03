@@ -1,0 +1,14 @@
+%%{init: {"flowchart": {"curve": "stepAfter"}}}%%
+flowchart TD
+    A["Orbbec Gemini 2L"]
+    A --> B["RGB frames"]
+    A --> C["Depth frames"]
+    B --> D["Align depth with RGB"]
+    C --> D
+    B --> E["Face landmarks detection from RGB - MediaPipe"]
+    E --> F{"Face detected?"}
+    F -->|Yes| G["Pose solver - depth embedded"]
+    D --> G
+    G --> H["Smoothing - around previous frame"]
+    H --> I["Output: X/Y/Z + Pitch/Yaw/Roll"]
+    F -->|No| J["Return no pose frame"]

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1580 268" font-family="Helvetica, Arial, sans-serif" font-size="11px">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#000"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill:#fff; stroke:#000; stroke-width:1.5; }
+    .term { fill:#f2f2f2; stroke:#000; stroke-width:1.5; }
+    .diamond { fill:#fff; stroke:#000; stroke-width:1.5; }
+    .wire { fill:none; stroke:#000; stroke-width:1.5; marker-end:url(#arrow); }
+    .label { fill:#000; text-anchor:middle; dominant-baseline:middle; }
+    .label-sm { fill:#000; text-anchor:middle; dominant-baseline:middle; font-size:10px; }
+    .edge-label { fill:#000; font-size:10px; text-anchor:middle; dominant-baseline:middle; }
+  </style>
+
+  <!-- Col 0: sensor -->
+  <rect class="box" x="20" y="108" width="138" height="44" rx="2"/>
+  <text class="label" x="89" y="130">Orbbec Gemini 2L</text>
+
+  <!-- Col 1: streams (Depth top, RGB bottom) -->
+  <rect class="box" x="210" y="28" width="118" height="40" rx="2"/>
+  <text class="label" x="269" y="48">Depth frames</text>
+
+  <rect class="box" x="210" y="188" width="118" height="40" rx="2"/>
+  <text class="label" x="269" y="208">RGB frames</text>
+
+  <!-- Col 2: registration (top) + landmarks (bottom) -->
+  <rect class="box" x="450" y="22" width="158" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="529" y="41.5">Align depth</tspan>
+    <tspan x="529" y="54.5">with RGB</tspan>
+  </text>
+
+  <rect class="box" x="450" y="162" width="238" height="68" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="569" y="189.5">Face landmarks detection</tspan>
+    <tspan x="569" y="202.5">from RGB - MediaPipe</tspan>
+  </text>
+
+  <!-- Col 3: decision -->
+  <polygon class="diamond" points="728,196 790,148 852,196 790,244"/>
+  <text class="label-sm" text-anchor="middle">
+    <tspan x="790" y="189.5">Face</tspan>
+    <tspan x="790" y="202.5">detected?</tspan>
+  </text>
+
+  <!-- Col 4: pose / no-pose -->
+  <rect class="box" x="920" y="22" width="168" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="1004" y="41.5">Pose solver -</tspan>
+    <tspan x="1004" y="54.5">depth embedded</tspan>
+  </text>
+
+  <rect class="term" x="920" y="162" width="168" height="52" rx="2"/>
+  <text class="label" x="1004" y="188">Return no pose frame</text>
+
+  <!-- Col 5–6: smooth + output (top main path) -->
+  <rect class="box" x="1140" y="22" width="178" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="1229" y="41.5">Smoothing - around</tspan>
+    <tspan x="1229" y="54.5">previous frame</tspan>
+  </text>
+
+  <rect class="term" x="1360" y="22" width="210" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="1465" y="41.5">Output: X/Y/Z +</tspan>
+    <tspan x="1465" y="54.5">Pitch/Yaw/Roll</tspan>
+  </text>
+
+  <!-- Wires -->
+  <!-- A -> Depth -->
+  <path class="wire" d="M 158 122 L 184 122 L 184 48 L 210 48"/>
+  <!-- A -> RGB -->
+  <path class="wire" d="M 158 138 L 184 138 L 184 208 L 210 208"/>
+
+  <!-- Depth -> Align (separate arrow, top entry) -->
+  <path class="wire" d="M 328 48 L 450 48"/>
+
+  <!-- RGB -> Align (separate arrow, lower entry; does not share path with Depth) -->
+  <path class="wire" d="M 328 208 L 368 208 L 368 68 L 450 68"/>
+
+  <!-- RGB -> Landmarks only (straight, bottom row) -->
+  <path class="wire" d="M 328 208 L 450 208"/>
+
+  <!-- Landmarks -> Face? -->
+  <path class="wire" d="M 688 196 L 728 196"/>
+
+  <!-- Align -> Pose (top main path) -->
+  <path class="wire" d="M 608 48 L 920 48"/>
+
+  <!-- Face? Yes -> Pose -->
+  <path class="wire" d="M 790 148 L 790 48 L 920 48"/>
+  <text class="edge-label" x="808" y="90">Yes</text>
+
+  <!-- Face? No -> Return no pose -->
+  <path class="wire" d="M 852 196 L 920 196"/>
+  <text class="edge-label" x="886" y="186">No</text>
+
+  <!-- Pose -> Smooth -> Output -->
+  <path class="wire" d="M 1088 48 L 1140 48"/>
+  <path class="wire" d="M 1318 48 L 1360 48"/>
+</svg>

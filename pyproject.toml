@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orbbec-head-tracking"
+version = "0.1.0"
+description = "6-DoF head tracking with Orbbec Gemini 2L, MediaPipe FaceMesh, and OpenCV PnP."
+requires-python = ">=3.11"
+dependencies = [
+    "mediapipe==0.10.14",
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "pyorbbecsdk @ https://github.com/orbbec/pyorbbecsdk/releases/download/v2.0.15/pyorbbecsdk-2.0.15-cp311-cp311-win_amd64.whl; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+orbbec-head-tracker = "orbbec_head_tracking.tracker:main"
+orbbec-head-viewer = "orbbec_head_tracking.tracker:viewer_main"
+orbbec-head-stream-tcp = "orbbec_head_tracking.stream_tcp:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
