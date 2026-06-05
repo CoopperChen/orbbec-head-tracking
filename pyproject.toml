@@ -11,7 +11,7 @@ dependencies = [
     "mediapipe==0.10.14",
     "numpy>=1.24",
     "opencv-python>=4.8",
-    "pyorbbecsdk @ https://github.com/orbbec/pyorbbecsdk/releases/download/v2.0.15/pyorbbecsdk-2.0.15-cp311-cp311-win_amd64.whl; platform_system == 'Windows'",
+    "pyorbbecsdk @ https://github.com/orbbec/pyorbbecsdk/releases/download/v2.0.15/pyorbbecsdk-2.0.15-cp311-cp311-win_amd64.whl ; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]
