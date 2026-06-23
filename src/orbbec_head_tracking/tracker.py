@@ -13,7 +13,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import cv2
 import mediapipe as mp
 import numpy as np
-from pyorbbecsdk import (
+from .orbbec_sdk import (
     AlignFilter,
     Config,
     Context,
