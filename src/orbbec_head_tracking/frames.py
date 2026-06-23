@@ -4,7 +4,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from pyorbbecsdk import OBFormat
+from .orbbec_sdk import OBFormat
 
 
 def camera_matrix_from_profile(color_profile: Any) -> tuple[np.ndarray, np.ndarray]:
