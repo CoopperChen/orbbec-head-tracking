@@ -4,7 +4,15 @@ Production-oriented 6-DoF head tracking for a single Orbbec Gemini 2L depth sens
 
 ## Setup
 
-Create a Python 3.11 virtual environment, then install this package:
+This project pins a compatible stack for Gemini 2 L on Windows:
+
+- **Python 3.11** (64-bit)
+- **`pyorbbecsdk2`** ≥ 2.0.18 (PyPI; import as `from pyorbbecsdk import ...`)
+- **`numpy`** ≥ 1.24, &lt; 2 (MediaPipe FaceMesh + Orbbec prebuilt wheels)
+- **`opencv-python`** ≥ 4.10, &lt; 4.13 (avoid NumPy 2-only OpenCV 4.13+)
+- **`mediapipe==0.10.14`** (classic FaceMesh API used by the tracker)
+
+Do not install `opencv-contrib-python` alongside `opencv-python`. Avoid `jax` 0.10+ (pulls NumPy 2).
 
 ```powershell
 py -3.11 -m venv .venv
@@ -13,7 +21,22 @@ python -m pip install --upgrade pip setuptools wheel
 pip install -e .
 ```
 
-This project pins Orbbec's official Windows Python 3.11 wheel because the older PyPI `pyorbbecsdk` wheel can install non-Windows binaries. It also pins `mediapipe==0.10.14` because newer MediaPipe wheels may expose only the Tasks API and omit the classic FaceMesh solution used by the tracker.
+Verify the package and camera (close Orbbec Viewer first):
+
+```powershell
+python -c "import orbbec_head_tracking.orbbec_sdk; print('package ok')"
+python scripts\check_orbbec_device.py
+```
+
+If `orbbec_head_tracking.orbbec_sdk` is missing, you are not in the repo with `pip install -e .` applied — run `git pull` then `pip install -e .` again from the project root.
+
+Direct SDK check (without the project wrapper):
+
+```powershell
+python -c "from pyorbbecsdk import Context; print(Context().query_devices().get_count())"
+```
+
+On first use on Windows 10, run Orbbec’s metadata script as Administrator (from the [pyorbbecsdk repo](https://github.com/orbbec/pyorbbecsdk) `scripts/obsensor_metadata_win10.ps1`), then reboot. If Python sees `count 0` but Orbbec Viewer works, install [OrbbecSDK v2](https://github.com/orbbec/OrbbecSDK_v2/releases) and use `pyorbbecsdk2` ≥ 2.1.1.
 
 ## Run
 
@@ -67,6 +90,20 @@ To stream translation + Euler rotation over Ethernet (TCP) as JSONL:
 orbbec-head-stream-tcp --tcp-host "<receiver-ip-or-hostname>" --tcp-port 5005
 ```
 
+To stream live head-motion compensation to a HICON 5-axis controller (XYZBC user offsets over UDP):
+
+```powershell
+pip install -e ".[cnc]"
+orbbec-head-stream-cnc `
+  --device-ip 192.168.0.95 `
+  --bind-ip 192.168.0.10 `
+  --calibration config/cnc_compensation_example.yaml `
+  --machine-pose -58.5,32.38,27,77.21,33.4 `
+  --capture-baseline-sec 2
+```
+
+The CNC stream uses **follow** mode by default: offsets move the machine with the head so the nozzle stays on the scalp trace. Safety guards zero all axes on tracking loss, low confidence, or UDP link fault. Edit `config/cnc_compensation_example.yaml` for axis limits, camera-to-machine rotation, and machine geometry (`a_mm`, `d_mm` from `layout_design`).
+
 You can also run offline on saved frames:
 
 ```powershell
@@ -89,7 +126,7 @@ orbbec-head-tracker --verbose
 
 ## Architecture
 
-- Acquire synchronized color and depth frames through `pyorbbecsdk.Pipeline`.
+- Acquire synchronized color and depth frames through `pyorbbecsdk2` (`from pyorbbecsdk import Pipeline`).
 - Align depth to color with `AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)`.
 - Copy raw SDK frame buffers before NumPy/OpenCV decoding.
 - Scale `Y16` depth frames with `depth_frame.get_depth_scale()` into `float32` millimeters.

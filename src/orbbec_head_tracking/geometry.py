@@ -23,6 +23,129 @@ def rotation_matrix_to_euler_degrees(rmat: np.ndarray) -> tuple[float, float, fl
     return float(np.degrees(pitch)), float(np.degrees(yaw)), float(np.degrees(roll))
 
 
+def rotation_matrix_to_quaternion(rmat: np.ndarray) -> np.ndarray:
+    m = np.asarray(rmat, dtype=np.float64)
+    trace = float(np.trace(m))
+    if trace > 0.0:
+        s = np.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (m[2, 1] - m[1, 2]) / s
+        y = (m[0, 2] - m[2, 0]) / s
+        z = (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2.0
+        w = (m[2, 1] - m[1, 2]) / s
+        x = 0.25 * s
+        y = (m[0, 1] + m[1, 0]) / s
+        z = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2.0
+        w = (m[0, 2] - m[2, 0]) / s
+        x = (m[0, 1] + m[1, 0]) / s
+        y = 0.25 * s
+        z = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2.0
+        w = (m[1, 0] - m[0, 1]) / s
+        x = (m[0, 2] + m[2, 0]) / s
+        y = (m[1, 2] + m[2, 1]) / s
+        z = 0.25 * s
+    q = np.array([w, x, y, z], dtype=np.float64)
+    norm = np.linalg.norm(q)
+    if norm < 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    return q / norm
+
+
+def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
+    w, x, y, z = np.asarray(quaternion, dtype=np.float64).reshape(4)
+    norm = np.linalg.norm([w, x, y, z])
+    if norm < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    w, x, y, z = w / norm, x / norm, y / norm, z / norm
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def align_rotation_matrix(r_new: np.ndarray, r_ref: np.ndarray) -> np.ndarray:
+    q_ref = rotation_matrix_to_quaternion(r_ref)
+    q_new = rotation_matrix_to_quaternion(r_new)
+    if float(np.dot(q_new, q_ref)) < 0.0:
+        q_new = -q_new
+    return quaternion_to_rotation_matrix(q_new)
+
+
+def rotation_angle_deg(r_a: np.ndarray, r_b: np.ndarray) -> float:
+    r_delta = np.asarray(r_a, dtype=np.float64).T @ np.asarray(r_b, dtype=np.float64)
+    cos_theta = float(np.clip((np.trace(r_delta) - 1.0) * 0.5, -1.0, 1.0))
+    return float(np.degrees(np.arccos(cos_theta)))
+
+
+def stabilize_rotation_matrix(
+    r_new: np.ndarray,
+    r_prev: np.ndarray | None,
+    *,
+    max_jump_deg: float = 25.0,
+) -> np.ndarray:
+    r_new = np.asarray(r_new, dtype=np.float64)
+    if r_prev is None:
+        return r_new
+    aligned = align_rotation_matrix(r_new, r_prev)
+    if rotation_angle_deg(r_prev, aligned) > float(max_jump_deg):
+        return np.asarray(r_prev, dtype=np.float64).copy()
+    return aligned
+
+
+def slerp_rotation_matrices(r0: np.ndarray, r1: np.ndarray, t: float) -> np.ndarray:
+    blend = float(np.clip(t, 0.0, 1.0))
+    q0 = rotation_matrix_to_quaternion(r0)
+    q1 = rotation_matrix_to_quaternion(r1)
+    dot = float(np.dot(q0, q1))
+    if dot < 0.0:
+        q1 = -q1
+        dot = -dot
+    if dot > 0.9995:
+        q = q0 + blend * (q1 - q0)
+        return quaternion_to_rotation_matrix(q)
+    theta = float(np.arccos(np.clip(dot, -1.0, 1.0)))
+    sin_theta = np.sin(theta)
+    if abs(sin_theta) < 1e-8:
+        return np.asarray(r0, dtype=np.float64).copy()
+    q = (np.sin((1.0 - blend) * theta) * q0 + np.sin(blend * theta) * q1) / sin_theta
+    return quaternion_to_rotation_matrix(q)
+
+
+def fit_weighted_rigid_rotation(
+    object_points: np.ndarray,
+    camera_points: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    object_points = np.asarray(object_points, dtype=np.float64)
+    camera_points = np.asarray(camera_points, dtype=np.float64)
+    if weights is None:
+        weights = np.ones(len(object_points), dtype=np.float64)
+    else:
+        weights = np.asarray(weights, dtype=np.float64).reshape(-1)
+    weights = weights / max(float(np.sum(weights)), 1e-12)
+    object_centroid = np.average(object_points, axis=0, weights=weights)
+    camera_centroid = np.average(camera_points, axis=0, weights=weights)
+    object_centered = object_points - object_centroid
+    camera_centered = camera_points - camera_centroid
+    covariance = (object_centered * weights[:, None]).T @ camera_centered
+    u_mat, _, vt_mat = np.linalg.svd(covariance)
+    rotation = vt_mat.T @ u_mat.T
+    if np.linalg.det(rotation) < 0.0:
+        vt_mat[-1, :] *= -1.0
+        rotation = vt_mat.T @ u_mat.T
+    return rotation
+
+
 def sample_depth_windows(depth_mm: np.ndarray, points_2d: np.ndarray, radius_px: int) -> np.ndarray:
     height, width = depth_mm.shape
     radius = max(0, int(radius_px))
@@ -105,15 +228,9 @@ def solve_pose_depth_rigid(
     object_points = np.asarray(obj, dtype=np.float32)
     camera_points = np.asarray(cam, dtype=np.float32)
     weights = LANDMARK_WEIGHTS[np.asarray(idx, dtype=np.int32)]
-    weights = weights / np.sum(weights)
-    oc = np.average(object_points, axis=0, weights=weights)
-    cc = np.average(camera_points, axis=0, weights=weights)
-    cov = ((object_points - oc) * weights[:, None]).T @ ((camera_points - cc) * weights[:, None])
-    u, _, vt = np.linalg.svd(cov)
-    rot = vt.T @ u.T
-    if np.linalg.det(rot) < 0:
-        vt[-1, :] *= -1.0
-        rot = vt.T @ u.T
+    rot = fit_weighted_rigid_rotation(object_points, camera_points, weights)
+    oc = np.average(object_points, axis=0, weights=weights / np.sum(weights))
+    cc = np.average(camera_points, axis=0, weights=weights / np.sum(weights))
     tvec = cc.reshape(3, 1) - rot @ oc.reshape(3, 1)
     rvec, _ = cv2.Rodrigues(rot.astype(np.float32))
     projected, _ = cv2.projectPoints(FACE_3D_MODEL, rvec, tvec, camera_matrix, distortion_coefficients)

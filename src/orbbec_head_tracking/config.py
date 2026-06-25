@@ -34,9 +34,10 @@ class TrackerConfig:
     suppress_mediapipe_native_stderr: bool = True
     smoothing_enabled: bool = True
     translation_alpha: float = 0.22
-    rotation_alpha: float = 0.28
+    rotation_alpha: float = 0.15
     translation_deadband_mm: float = 2.5
-    rotation_deadband_deg: float = 0.35
+    rotation_deadband_deg: float = 1.0
+    rotation_max_jump_deg: float = 20.0
     reset_after_missed_frames: int = 12
 
     def __post_init__(self) -> None:
