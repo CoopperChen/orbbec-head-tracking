@@ -9,3 +9,4 @@ def test_pose_smoother_reset() -> None:
     smoother = PoseSmoother(0.2, 0.2, 1.0, 1.0)
     smoother.reset()
     assert smoother.translation_vector_mm is None
+    assert smoother.rotation_matrix is None

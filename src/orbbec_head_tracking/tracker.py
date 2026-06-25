@@ -34,6 +34,7 @@ LANDMARK_MODEL_POINTS = {
     291: [150.0, -150.0, -125.0],
 }
 LANDMARK_INDICES = list(LANDMARK_MODEL_POINTS)
+LANDMARK_WEIGHTS = np.array([2.0, 1.0, 1.5, 1.5, 1.0, 1.0], dtype=np.float32)
 FACE_3D_MODEL = np.array(
     [
         LANDMARK_MODEL_POINTS[index]
@@ -72,9 +73,10 @@ class TrackerConfig:
     suppress_mediapipe_native_stderr: bool = True
     smoothing_enabled: bool = True
     translation_alpha: float = 0.22
-    rotation_alpha: float = 0.28
+    rotation_alpha: float = 0.15
     translation_deadband_mm: float = 2.5
-    rotation_deadband_deg: float = 0.35
+    rotation_deadband_deg: float = 1.0
+    rotation_max_jump_deg: float = 20.0
     reset_after_missed_frames: int = 12
 
 
@@ -111,21 +113,21 @@ class PoseSmoother:
         self.translation_alpha = float(np.clip(translation_alpha, 0.0, 1.0))
         self.rotation_alpha = float(np.clip(rotation_alpha, 0.0, 1.0))
         self.translation_deadband_mm = max(0.0, float(translation_deadband_mm))
-        self.rotation_deadband_rad = np.radians(max(0.0, float(rotation_deadband_deg)))
+        self.rotation_deadband_deg = max(0.0, float(rotation_deadband_deg))
         self.translation_vector_mm: np.ndarray | None = None
-        self.rotation_vector: np.ndarray | None = None
+        self.rotation_matrix: np.ndarray | None = None
 
     def reset(self) -> None:
         self.translation_vector_mm = None
-        self.rotation_vector = None
+        self.rotation_matrix = None
 
     def smooth(self, pose: HeadPose) -> HeadPose:
         translation = pose.translation_vector_mm.astype(np.float32).reshape(3)
-        rotation = pose.rotation_vector.astype(np.float32).reshape(3, 1)
+        rmat_curr, _ = cv2.Rodrigues(pose.rotation_vector.astype(np.float32).reshape(3, 1))
 
-        if self.translation_vector_mm is None or self.rotation_vector is None:
+        if self.translation_vector_mm is None or self.rotation_matrix is None:
             self.translation_vector_mm = translation.copy()
-            self.rotation_vector = rotation.copy()
+            self.rotation_matrix = np.asarray(rmat_curr, dtype=np.float64).copy()
             return pose
 
         smoothed_translation = self._smooth_vector(
@@ -134,20 +136,20 @@ class PoseSmoother:
             self.translation_alpha,
             self.translation_deadband_mm,
         )
-        smoothed_rotation = self._smooth_vector(
-            self.rotation_vector.reshape(3),
-            rotation.reshape(3),
-            self.rotation_alpha,
-            self.rotation_deadband_rad,
-        ).reshape(3, 1)
+        from .geometry import align_rotation_matrix, rotation_angle_deg, slerp_rotation_matrices
 
+        rmat_curr = align_rotation_matrix(np.asarray(rmat_curr, dtype=np.float64), self.rotation_matrix)
+        if rotation_angle_deg(self.rotation_matrix, rmat_curr) < self.rotation_deadband_deg:
+            rmat_out = self.rotation_matrix
+        else:
+            rmat_out = slerp_rotation_matrices(self.rotation_matrix, rmat_curr, self.rotation_alpha)
         self.translation_vector_mm = smoothed_translation.astype(np.float32)
-        self.rotation_vector = smoothed_rotation.astype(np.float32)
-        rmat, _ = cv2.Rodrigues(self.rotation_vector)
+        self.rotation_matrix = np.asarray(rmat_out, dtype=np.float64)
+        rvec_out, _ = cv2.Rodrigues(self.rotation_matrix.astype(np.float32))
         return HeadPose(
-            rotation_vector=self.rotation_vector.copy(),
+            rotation_vector=rvec_out.reshape(3, 1).astype(np.float32).copy(),
             translation_vector_mm=self.translation_vector_mm.copy(),
-            euler_degrees=_rotation_matrix_to_euler_degrees(rmat),
+            euler_degrees=_rotation_matrix_to_euler_degrees(self.rotation_matrix),
             landmarks_2d=pose.landmarks_2d,
             sampled_depth_mm=pose.sampled_depth_mm,
             inliers=pose.inliers,
@@ -293,7 +295,7 @@ def _points_to_camera_3d(
     depth_mm: np.ndarray,
     camera_matrix: np.ndarray,
     radius_px: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     fx = float(camera_matrix[0, 0])
     fy = float(camera_matrix[1, 1])
     cx = float(camera_matrix[0, 2])
@@ -301,6 +303,7 @@ def _points_to_camera_3d(
     object_points = []
     camera_points = []
     sampled_depth = []
+    weights = []
 
     for index, (x_float, y_float) in enumerate(points_2d):
         depth_value = _sample_depth_window(depth_mm, float(x_float), float(y_float), radius_px)
@@ -311,28 +314,32 @@ def _points_to_camera_3d(
         y_camera = (float(y_float) - cy) * depth_value / fy
         object_points.append(FACE_3D_MODEL[index])
         camera_points.append([x_camera, y_camera, depth_value])
+        weights.append(LANDMARK_WEIGHTS[index])
 
     return (
         np.asarray(object_points, dtype=np.float32),
         np.asarray(camera_points, dtype=np.float32),
         np.asarray(sampled_depth, dtype=np.float32),
+        np.asarray(weights, dtype=np.float32),
     )
 
 
 def _fit_rigid_transform(
     object_points: np.ndarray,
     camera_points: np.ndarray,
+    weights: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    object_centroid = object_points.mean(axis=0)
-    camera_centroid = camera_points.mean(axis=0)
-    object_centered = object_points - object_centroid
-    camera_centered = camera_points - camera_centroid
-    covariance = object_centered.T @ camera_centered
-    u_mat, _, vt_mat = np.linalg.svd(covariance)
-    rotation = vt_mat.T @ u_mat.T
-    if np.linalg.det(rotation) < 0.0:
-        vt_mat[-1, :] *= -1.0
-        rotation = vt_mat.T @ u_mat.T
+    from .geometry import fit_weighted_rigid_rotation
+
+    weights_arr = None if weights is None else np.asarray(weights, dtype=np.float64)
+    rotation = fit_weighted_rigid_rotation(object_points, camera_points, weights_arr)
+    if weights_arr is None:
+        object_centroid = object_points.mean(axis=0)
+        camera_centroid = camera_points.mean(axis=0)
+    else:
+        weights_norm = weights_arr / max(float(np.sum(weights_arr)), 1e-12)
+        object_centroid = np.average(object_points, axis=0, weights=weights_norm)
+        camera_centroid = np.average(camera_points, axis=0, weights=weights_norm)
     translation = camera_centroid.reshape(3, 1) - rotation @ object_centroid.reshape(3, 1)
     rotation_vector, _ = cv2.Rodrigues(rotation.astype(np.float32))
     return rotation_vector.astype(np.float32), translation.astype(np.float32)
@@ -488,7 +495,7 @@ class OrbbecHeadTracker:
             image_height,
         )
         if self.config.pose_solver == "depth-rigid":
-            object_points, camera_points, sampled_depth = _points_to_camera_3d(
+            object_points, camera_points, sampled_depth, fit_weights = _points_to_camera_3d(
                 points_2d,
                 depth_mm,
                 self.camera_matrix,
@@ -497,7 +504,7 @@ class OrbbecHeadTracker:
             if len(camera_points) < self.config.min_depth_points:
                 self._mark_pose_missed()
                 return TrackingFrame(color_bgr=color_bgr, depth_mm=depth_mm, pose=None)
-            rvec, tvec = _fit_rigid_transform(object_points, camera_points)
+            rvec, tvec = _fit_rigid_transform(object_points, camera_points, fit_weights)
             inliers = np.arange(len(camera_points), dtype=np.int32).reshape(-1, 1)
         else:
             sampled_depth = _sample_depth(depth_mm, points_2d)
@@ -539,6 +546,17 @@ class OrbbecHeadTracker:
                 )
 
         rmat, _ = cv2.Rodrigues(rvec)
+        from .geometry import stabilize_rotation_matrix
+
+        previous_rmat = None
+        if self.previous_raw_rotation_vector is not None:
+            previous_rmat, _ = cv2.Rodrigues(self.previous_raw_rotation_vector.reshape(3, 1))
+        rmat = stabilize_rotation_matrix(
+            rmat,
+            previous_rmat,
+            max_jump_deg=self.config.rotation_max_jump_deg,
+        )
+        rvec, _ = cv2.Rodrigues(rmat.astype(np.float32))
         euler_degrees = _rotation_matrix_to_euler_degrees(rmat)
         self.previous_raw_rotation_vector = rvec.astype(np.float32)
         self.previous_raw_translation_vector_mm = tvec.reshape(3).astype(np.float32)
