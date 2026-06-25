@@ -95,14 +95,15 @@ To stream live head-motion compensation to a HICON 5-axis controller (XYZBC user
 ```powershell
 pip install -e ".[cnc]"
 orbbec-head-stream-cnc `
-  --device-ip 192.168.0.95 `
-  --bind-ip 192.168.0.10 `
   --calibration config/cnc_compensation_example.yaml `
-  --machine-pose -58.5,32.38,27,77.21,33.4 `
-  --capture-baseline-sec 2
+  --machine-pose=-60,0,40,0,0 `
+  --capture-baseline-sec 2 `
+  --view
 ```
 
-The CNC stream uses **follow** mode by default: offsets move the machine with the head so the nozzle stays on the scalp trace. Safety guards zero all axes on tracking loss, low confidence, or UDP link fault. Edit `config/cnc_compensation_example.yaml` for axis limits, camera-to-machine rotation, and machine geometry (`a_mm`, `d_mm` from `layout_design`).
+Add `--view` to show live RGB + depth windows with pose axes and a CNC status panel (XYZBC offsets, UDP link, baseline, safety). Press `q` or `Esc` to stop.
+
+The CNC stream uses **follow** mode by default: offsets move the machine with the head so the nozzle stays on the scalp trace. Default UDP targets are controller `192.168.208.35` and local bind `192.168.208.10` (override with `--device-ip` / `--bind-ip`). Safety guards zero all axes on tracking loss, low confidence, or UDP link fault. Edit `config/cnc_compensation_example.yaml` for axis limits, camera-to-machine rotation, and machine geometry (`a_mm`, `d_mm` from `layout_design`).
 
 You can also run offline on saved frames:
 
