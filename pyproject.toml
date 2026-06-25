@@ -27,6 +27,7 @@ orbbec-head-tracker = "orbbec_head_tracking.tracker:main"
 orbbec-head-viewer = "orbbec_head_tracking.tracker:viewer_main"
 orbbec-head-stream-tcp = "orbbec_head_tracking.stream_tcp:main"
 orbbec-head-stream-cnc = "orbbec_head_tracking.stream_cnc:main"
+orbbec-cnc-offset-test = "orbbec_head_tracking.cnc_offset_test:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

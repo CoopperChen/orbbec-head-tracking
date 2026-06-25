@@ -1,0 +1,52 @@
+machine:
+  a_mm: 180.7
+  d_mm: 57.59
+  gap_size_mm: 15.0
+  calgap_z_mm: 26.62
+  c0_deg: 90
+  b0_deg: 0
+
+camera_extrinsic:
+  rotation:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+
+reference_normal: [0.0, 0.0, 1.0]
+
+machine_pose: [-60, 0, 40, 0, 0]
+
+axis_limits:
+  x_mm: [-25, 25]
+  y_mm: [-25, 25]
+  z_mm: [-25, 25]
+  b_deg: [-15, 15]
+  c_deg: [-15, 15]
+
+mm_to_axis_unit: 1.0
+deg_to_axis_unit: 1.0
+solver: decoupled
+offset_mode: follow
+update_period_ms: 10
+
+# HICON motor indices (0-7). This machine drives X with two motors.
+motor_map:
+  x: [0, 3]
+  y: [1]
+  z: [2]
+  b: [4]
+  c: [5]
+
+safety:
+  min_confidence: 0.6
+  on_tracking_loss: zero_offsets
+  on_low_confidence: zero_offsets
+  max_head_speed_mm_s: 80
+  vmax_mm_s:
+    x: 30
+    y: 30
+    z: 15
+  vmax_deg_s:
+    b: 10
+    c: 10
+  require_baseline_before_stream: true
