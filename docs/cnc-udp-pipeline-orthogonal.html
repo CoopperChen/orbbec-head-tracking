@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CNC UDP compensation pipeline (orthogonal)</title>
+  <style>
+    body {
+      font-family: Helvetica, Arial, sans-serif;
+      margin: 1.5rem;
+      background: #fff;
+      color: #000;
+    }
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin: 0 0 0.75rem;
+    }
+    p {
+      font-size: 0.9rem;
+      margin: 0 0 1rem;
+      max-width: 52rem;
+    }
+    .figure {
+      overflow-x: auto;
+      background: #fff;
+      padding: 0.25rem 0;
+    }
+    .figure svg {
+      display: block;
+      min-width: 980px;
+      max-width: 100%;
+      height: auto;
+    }
+    .caption {
+      font-size: 0.85rem;
+      margin-top: 0.75rem;
+      color: #333;
+    }
+    a { color: #0645ad; }
+  </style>
+</head>
+<body>
+  <h1>CNC UDP compensation pipeline</h1>
+  <p>
+    End-to-end path for <code>orbbec-head-stream-cnc</code>: vision tracking,
+    XYZBC offset encoding, safety guards, and HICON user-offset streaming over UDP.
+    Orthogonal layout matches <a href="face-tracking-pipeline-orthogonal.svg">face-tracking-pipeline-orthogonal.svg</a>.
+  </p>
+  <div class="figure">
+    <img src="cnc-udp-pipeline-orthogonal.svg" alt="CNC UDP compensation pipeline" width="1960" height="280" />
+  </div>
+  <p class="caption">
+    Fig. 1. Production pipeline: D2C registration, MediaPipe landmarks, depth-rigid pose,
+    smoothing, baseline-relative XYZBC encode, mismatch/rate limits, safety hold on tracking loss,
+    UDP XYZBC offset output at 100&nbsp;Hz.
+  </p>
+  <p>
+    Source: <a href="cnc-udp-pipeline-orthogonal.svg">cnc-udp-pipeline-orthogonal.svg</a> ·
+    Mermaid: <a href="cnc-udp-pipeline-mermaid.html">cnc-udp-pipeline-mermaid.html</a> ·
+    <a href="cnc-udp-pipeline.md">cnc-udp-pipeline.md</a>
+  </p>
+</body>
+</html>

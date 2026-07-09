@@ -42,7 +42,7 @@ When asked to generate components, use this functional skeleton as your algorith
 import cv2
 import numpy as np
 import mediapipe as mp
-from pyorbbecsdk import Pipeline, Config, OBSensorType, OBStreamType, AlignFilter
+from orbbec_head_tracking.orbbec_sdk import Pipeline, Config, OBSensorType, OBStreamType, AlignFilter
 
 LANDMARK_INDICES = [1, 152, 33, 263, 61, 291]
 FACE_3D_MODEL = np.array([
@@ -72,16 +72,12 @@ def stream_pipeline():
     return pipe, align_f, cam_mtx, dist_c
 ```
 
-# Optional Module: Ethernet Pose Streaming
+# CNC UDP offset streaming
 
-When adding networking modules that stream pose data over Ethernet:
+Production machine compensation uses `orbbec-head-stream-cnc` and `MSG_SET_AXIS_USEROFFSET` over UDP (see `cnc_protocol.py`, `cnc_udp_streamer.py`).
 
-* Use `socket` with explicit connection timeouts and `try...finally` cleanup for sockets.
-* Prefer newline-delimited JSON (`JSONL`) messages over TCP for simple ingestion.
-* Stream pose fields in consistent units:
-  - translation: millimeters (`X/Y/Z` in mm)
-  - rotation: pitch/yaw/roll in degrees
-* Implement reconnection behavior for dropped TCP links (bounded reconnect interval).
-* Keep networking out of the critical vision processing path; only serialize and send the final pose record per successful frame read.
-
+* Keep networking out of the vision hot path; encode and send only after pose + safety per tick.
+* Use explicit bind/send addresses, ACK watchdog, and link-fault handling (`hold_last`, not blind zero).
+* Stream XYZBC in axis units configured in calibration YAML; match motor map on the controller.
+* On tracking loss or spike rejection, hold the last sent offset until recovery — never flash all-zero while the machine is still compensated.
 

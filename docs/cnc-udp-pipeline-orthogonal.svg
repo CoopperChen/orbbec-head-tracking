@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1960 280" font-family="Helvetica, Arial, sans-serif" font-size="11px">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#000"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill:#fff; stroke:#000; stroke-width:1.5; }
+    .term { fill:#f2f2f2; stroke:#000; stroke-width:1.5; }
+    .diamond { fill:#fff; stroke:#000; stroke-width:1.5; }
+    .wire { fill:none; stroke:#000; stroke-width:1.5; marker-end:url(#arrow); }
+    .label {
+      fill:#000;
+      font-size:11px;
+      text-anchor:middle;
+      dominant-baseline:middle;
+    }
+  </style>
+
+  <!-- Col 0: sensor -->
+  <rect class="box" x="20" y="108" width="138" height="44" rx="2"/>
+  <text class="label" x="89" y="130">Orbbec Gemini 2L</text>
+
+  <!-- Col 1: streams -->
+  <rect class="box" x="210" y="28" width="118" height="40" rx="2"/>
+  <text class="label" x="269" y="48">Depth frames</text>
+
+  <rect class="box" x="210" y="188" width="118" height="40" rx="2"/>
+  <text class="label" x="269" y="208">RGB frames</text>
+
+  <!-- Col 2: align + landmarks -->
+  <rect class="box" x="400" y="22" width="158" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="479" y="41.5">Align depth</tspan>
+    <tspan x="479" y="54.5">with RGB</tspan>
+  </text>
+
+  <rect class="box" x="400" y="174" width="238" height="68" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="519" y="201.5">Face landmarks detection</tspan>
+    <tspan x="519" y="214.5">from RGB - MediaPipe</tspan>
+  </text>
+
+  <!-- Col 3: decision -->
+  <polygon class="diamond" points="668,208 730,160 792,208 730,256"/>
+  <text class="label" x="730" y="208">Tracking OK?</text>
+
+  <!-- Col 4: pose + safety hold -->
+  <rect class="box" x="860" y="22" width="168" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="944" y="41.5">Pose solver -</tspan>
+    <tspan x="944" y="54.5">depth rigid</tspan>
+  </text>
+
+  <rect class="term" x="860" y="182" width="188" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="954" y="201.5">Safety hold</tspan>
+    <tspan x="954" y="214.5">last offset</tspan>
+  </text>
+
+  <!-- Col 5-8: top main path -->
+  <rect class="box" x="1080" y="22" width="118" height="52" rx="2"/>
+  <text class="label" x="1139" y="48">Smoothing</text>
+
+  <rect class="box" x="1250" y="22" width="178" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="1339" y="41.5">Encode XYZBC</tspan>
+    <tspan x="1339" y="54.5">vs baseline</tspan>
+  </text>
+
+  <rect class="box" x="1480" y="22" width="188" height="52" rx="2"/>
+  <text class="label" text-anchor="middle">
+    <tspan x="1574" y="41.5">Mismatch and</tspan>
+    <tspan x="1574" y="54.5">rate limits</tspan>
+  </text>
+
+  <rect class="term" x="1700" y="22" width="250" height="52" rx="2"/>
+  <text class="label" x="1825" y="48">UDP XYZBC offset output</text>
+
+  <!-- Wires -->
+  <path class="wire" d="M 158 122 L 184 122 L 184 48 L 210 48"/>
+  <path class="wire" d="M 158 138 L 184 138 L 184 208 L 210 208"/>
+
+  <path class="wire" d="M 328 48 L 400 48"/>
+  <path class="wire" d="M 328 208 L 368 208 L 368 68 L 400 68"/>
+  <path class="wire" d="M 328 208 L 400 208"/>
+
+  <path class="wire" d="M 638 208 L 668 208"/>
+  <path class="wire" d="M 558 48 L 860 48"/>
+
+  <path class="wire" d="M 730 160 L 730 48 L 860 48"/>
+  <text class="label" x="748" y="90">Yes</text>
+
+  <path class="wire" d="M 792 208 L 860 208"/>
+  <text class="label" x="826" y="198">No</text>
+
+  <path class="wire" d="M 1028 48 L 1080 48"/>
+  <path class="wire" d="M 1198 48 L 1250 48"/>
+  <path class="wire" d="M 1428 48 L 1480 48"/>
+  <path class="wire" d="M 1668 48 L 1700 48"/>
+
+  <path class="wire" d="M 1048 208 L 1574 208 L 1574 74"/>
+</svg>

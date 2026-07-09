@@ -1,0 +1,19 @@
+%%{init: {"flowchart": {"curve": "stepAfter"}}}%%
+flowchart LR
+    A["Orbbec Gemini 2L"]
+    A --> B["RGB frames"]
+    A --> C["Depth frames"]
+    B ~~~ C
+    B --> D["Align depth with RGB"]
+    C --> D
+    B --> E["Face landmarks - MediaPipe"]
+    E --> F{"Tracking OK?"}
+    D --> G["Pose solver - depth rigid"]
+    E --> G
+    G --> H["Smoothing"]
+    H --> I["Encode XYZBC vs baseline"]
+    F -->|No| J["Safety hold last offset"]
+    F -->|Yes| I
+    I --> K["Mismatch and rate limits"]
+    J --> K
+    K --> L["UDP XYZBC offset output"]

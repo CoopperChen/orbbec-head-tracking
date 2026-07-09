@@ -12,11 +12,40 @@ from .geometry import (
 from .types import HeadPose
 
 
+def smooth_translation_step(
+    previous: np.ndarray,
+    current: np.ndarray,
+    *,
+    alpha: float,
+    per_axis_deadband_mm: float,
+    norm_deadband_mm: float,
+) -> np.ndarray:
+    """Blend translation toward current; damp jitter without blocking macro motion."""
+    previous_arr = np.asarray(previous, dtype=np.float32).reshape(3)
+    delta = np.asarray(current, dtype=np.float32).reshape(3) - previous_arr
+    norm = float(np.linalg.norm(delta))
+    if norm <= 0.0:
+        return previous_arr
+
+    step = float(np.clip(alpha, 0.0, 1.0)) * delta
+    if per_axis_deadband_mm > 0.0:
+        step = np.where(np.abs(step) < per_axis_deadband_mm, 0.0, step)
+    return previous_arr + step
+
+
 class PoseSmoother:
-    def __init__(self, translation_alpha: float, rotation_alpha: float, translation_deadband_mm: float, rotation_deadband_deg: float) -> None:
+    def __init__(
+        self,
+        translation_alpha: float,
+        rotation_alpha: float,
+        translation_deadband_mm: float,
+        rotation_deadband_deg: float,
+        translation_norm_deadband_mm: float = 0.0,
+    ) -> None:
         self.translation_alpha = float(np.clip(translation_alpha, 0.0, 1.0))
         self.rotation_alpha = float(np.clip(rotation_alpha, 0.0, 1.0))
         self.translation_deadband_mm = max(0.0, float(translation_deadband_mm))
+        self.translation_norm_deadband_mm = max(0.0, float(translation_norm_deadband_mm))
         self.rotation_deadband_deg = max(0.0, float(rotation_deadband_deg))
         self.translation_vector_mm: np.ndarray | None = None
         self.rotation_matrix: np.ndarray | None = None
@@ -32,9 +61,13 @@ class PoseSmoother:
             self.translation_vector_mm = t.copy()
             self.rotation_matrix = np.asarray(rmat_curr, dtype=np.float64).copy()
             return pose
-        dt = t - self.translation_vector_mm
-        dt = np.where(np.abs(dt) < self.translation_deadband_mm, 0.0, dt)
-        self.translation_vector_mm = (self.translation_vector_mm + self.translation_alpha * dt).astype(np.float32)
+        self.translation_vector_mm = smooth_translation_step(
+            self.translation_vector_mm,
+            t,
+            alpha=self.translation_alpha,
+            per_axis_deadband_mm=self.translation_deadband_mm,
+            norm_deadband_mm=self.translation_norm_deadband_mm,
+        )
         rmat_curr = align_rotation_matrix(np.asarray(rmat_curr, dtype=np.float64), self.rotation_matrix)
         if rotation_angle_deg(self.rotation_matrix, rmat_curr) < self.rotation_deadband_deg:
             rmat_out = self.rotation_matrix

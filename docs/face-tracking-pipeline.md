@@ -1,21 +1,22 @@
 # Face Tracking Pipeline
 
-## Publication figure (orthogonal lines)
+## Publication figure (orthogonal, horizontal)
 
 ![Head pose pipeline](face-tracking-pipeline-orthogonal.svg)
 
-Vector file: `face-tracking-pipeline-orthogonal.svg` (orthogonal connectors, original labels).
+Vector file: `face-tracking-pipeline-orthogonal.svg` — left-to-right layout with orthogonal connectors.
 
 ---
 
-## Editable Mermaid (your labels)
+## Editable Mermaid (horizontal / LR)
 
 ```mermaid
 %%{init: {"flowchart": {"curve": "stepAfter"}}}%%
-flowchart TD
+flowchart LR
     A["Orbbec Gemini 2L"]
     A --> B["RGB frames"]
     A --> C["Depth frames"]
+    B ~~~ C
     B --> D["Align depth with RGB"]
     C --> D
     B --> E["Face landmarks detection from RGB - MediaPipe"]
@@ -29,6 +30,8 @@ flowchart TD
 
 Source file: `face-tracking-pipeline-ieee.mmd`  
 Browser: `face-tracking-pipeline-ieee.html`
+
+Full production path (vision + CNC UDP): [`cnc-udp-pipeline.md`](cnc-udp-pipeline.md)
 
 ---
 

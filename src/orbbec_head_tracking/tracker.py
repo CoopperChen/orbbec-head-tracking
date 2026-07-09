@@ -75,8 +75,11 @@ class TrackerConfig:
     translation_alpha: float = 0.22
     rotation_alpha: float = 0.15
     translation_deadband_mm: float = 2.5
+    translation_norm_deadband_mm: float = 4.0
     rotation_deadband_deg: float = 1.0
     rotation_max_jump_deg: float = 20.0
+    translation_max_jump_mm: float = 18.0
+    max_landmark_depth_deviation_mm: float = 120.0
     reset_after_missed_frames: int = 12
 
 
@@ -109,10 +112,12 @@ class PoseSmoother:
         rotation_alpha: float,
         translation_deadband_mm: float,
         rotation_deadband_deg: float,
+        translation_norm_deadband_mm: float = 0.0,
     ) -> None:
         self.translation_alpha = float(np.clip(translation_alpha, 0.0, 1.0))
         self.rotation_alpha = float(np.clip(rotation_alpha, 0.0, 1.0))
         self.translation_deadband_mm = max(0.0, float(translation_deadband_mm))
+        self.translation_norm_deadband_mm = max(0.0, float(translation_norm_deadband_mm))
         self.rotation_deadband_deg = max(0.0, float(rotation_deadband_deg))
         self.translation_vector_mm: np.ndarray | None = None
         self.rotation_matrix: np.ndarray | None = None
@@ -135,6 +140,7 @@ class PoseSmoother:
             translation,
             self.translation_alpha,
             self.translation_deadband_mm,
+            self.translation_norm_deadband_mm,
         )
         from .geometry import align_rotation_matrix, rotation_angle_deg, slerp_rotation_matrices
 
@@ -162,11 +168,17 @@ class PoseSmoother:
         current: np.ndarray,
         alpha: float,
         deadband: float,
+        norm_deadband: float = 0.0,
     ) -> np.ndarray:
-        delta = current - previous
-        if deadband > 0.0:
-            delta = np.where(np.abs(delta) < deadband, 0.0, delta)
-        return previous + alpha * delta
+        from .smoothing import smooth_translation_step
+
+        return smooth_translation_step(
+            previous,
+            current,
+            alpha=alpha,
+            per_axis_deadband_mm=deadband,
+            norm_deadband_mm=norm_deadband,
+        )
 
 
 def _camera_matrix_from_profile(color_profile: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -295,19 +307,23 @@ def _points_to_camera_3d(
     depth_mm: np.ndarray,
     camera_matrix: np.ndarray,
     radius_px: int,
+    *,
+    max_depth_deviation_mm: float = 120.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    from .geometry import depth_inlier_mask
+
     fx = float(camera_matrix[0, 0])
     fy = float(camera_matrix[1, 1])
     cx = float(camera_matrix[0, 2])
     cy = float(camera_matrix[1, 2])
     object_points = []
     camera_points = []
-    sampled_depth = []
+    sampled_depth = np.full((len(points_2d),), np.nan, dtype=np.float32)
     weights = []
 
     for index, (x_float, y_float) in enumerate(points_2d):
         depth_value = _sample_depth_window(depth_mm, float(x_float), float(y_float), radius_px)
-        sampled_depth.append(depth_value)
+        sampled_depth[index] = depth_value
         if not np.isfinite(depth_value) or depth_value <= 0.0:
             continue
         x_camera = (float(x_float) - cx) * depth_value / fx
@@ -316,11 +332,23 @@ def _points_to_camera_3d(
         camera_points.append([x_camera, y_camera, depth_value])
         weights.append(LANDMARK_WEIGHTS[index])
 
+    if not camera_points:
+        return (
+            np.asarray(object_points, dtype=np.float32),
+            np.asarray(camera_points, dtype=np.float32),
+            sampled_depth,
+            np.asarray(weights, dtype=np.float32),
+        )
+
+    object_arr = np.asarray(object_points, dtype=np.float32)
+    camera_arr = np.asarray(camera_points, dtype=np.float32)
+    weight_arr = np.asarray(weights, dtype=np.float32)
+    keep = depth_inlier_mask(camera_arr[:, 2], max_depth_deviation_mm)
     return (
-        np.asarray(object_points, dtype=np.float32),
-        np.asarray(camera_points, dtype=np.float32),
-        np.asarray(sampled_depth, dtype=np.float32),
-        np.asarray(weights, dtype=np.float32),
+        object_arr[keep],
+        camera_arr[keep],
+        sampled_depth,
+        weight_arr[keep],
     )
 
 
@@ -343,6 +371,38 @@ def _fit_rigid_transform(
     translation = camera_centroid.reshape(3, 1) - rotation @ object_centroid.reshape(3, 1)
     rotation_vector, _ = cv2.Rodrigues(rotation.astype(np.float32))
     return rotation_vector.astype(np.float32), translation.astype(np.float32)
+
+
+def _fit_rigid_transform_robust(
+    object_points: np.ndarray,
+    camera_points: np.ndarray,
+    weights: np.ndarray | None = None,
+    *,
+    min_points: int = 4,
+    max_residual_mm: float = 12.0,
+    passes: int = 2,
+) -> tuple[np.ndarray, np.ndarray]:
+    obj = np.asarray(object_points, dtype=np.float32)
+    cam = np.asarray(camera_points, dtype=np.float32)
+    w = None if weights is None else np.asarray(weights, dtype=np.float32).reshape(-1)
+    rvec, tvec = _fit_rigid_transform(obj, cam, w)
+    for _ in range(max(0, passes - 1)):
+        if len(obj) <= min_points:
+            break
+        rot, _ = cv2.Rodrigues(rvec)
+        transformed = (rot @ obj.reshape(-1, 3).T).T + tvec.reshape(3)
+        residuals = np.linalg.norm(cam - transformed, axis=1)
+        worst = int(np.argmax(residuals))
+        if float(residuals[worst]) <= max_residual_mm:
+            break
+        keep = np.ones(len(obj), dtype=bool)
+        keep[worst] = False
+        obj = obj[keep]
+        cam = cam[keep]
+        if w is not None:
+            w = w[keep]
+        rvec, tvec = _fit_rigid_transform(obj, cam, w)
+    return rvec, tvec
 
 
 def _rotation_matrix_to_euler_degrees(rmat: np.ndarray) -> tuple[float, float, float]:
@@ -378,6 +438,7 @@ class OrbbecHeadTracker:
             self.config.rotation_alpha,
             self.config.translation_deadband_mm,
             self.config.rotation_deadband_deg,
+            float(getattr(self.config, "translation_norm_deadband_mm", 0.0)),
         )
         self.missed_pose_count = 0
         self.previous_raw_rotation_vector: np.ndarray | None = None
@@ -495,16 +556,18 @@ class OrbbecHeadTracker:
             image_height,
         )
         if self.config.pose_solver == "depth-rigid":
+            max_depth_dev = float(getattr(self.config, "max_landmark_depth_deviation_mm", 120.0))
             object_points, camera_points, sampled_depth, fit_weights = _points_to_camera_3d(
                 points_2d,
                 depth_mm,
                 self.camera_matrix,
                 self.config.depth_sample_radius_px,
+                max_depth_deviation_mm=max_depth_dev,
             )
             if len(camera_points) < self.config.min_depth_points:
                 self._mark_pose_missed()
                 return TrackingFrame(color_bgr=color_bgr, depth_mm=depth_mm, pose=None)
-            rvec, tvec = _fit_rigid_transform(object_points, camera_points, fit_weights)
+            rvec, tvec = _fit_rigid_transform_robust(object_points, camera_points, fit_weights)
             inliers = np.arange(len(camera_points), dtype=np.int32).reshape(-1, 1)
         else:
             sampled_depth = _sample_depth(depth_mm, points_2d)
@@ -546,7 +609,7 @@ class OrbbecHeadTracker:
                 )
 
         rmat, _ = cv2.Rodrigues(rvec)
-        from .geometry import stabilize_rotation_matrix
+        from .geometry import stabilize_rotation_matrix, stabilize_translation_mm
 
         previous_rmat = None
         if self.previous_raw_rotation_vector is not None:
@@ -557,9 +620,14 @@ class OrbbecHeadTracker:
             max_jump_deg=self.config.rotation_max_jump_deg,
         )
         rvec, _ = cv2.Rodrigues(rmat.astype(np.float32))
+        translation_mm = stabilize_translation_mm(
+            tvec.reshape(3),
+            self.previous_raw_translation_vector_mm,
+            max_jump_mm=float(getattr(self.config, "translation_max_jump_mm", 25.0)),
+        )
         euler_degrees = _rotation_matrix_to_euler_degrees(rmat)
         self.previous_raw_rotation_vector = rvec.astype(np.float32)
-        self.previous_raw_translation_vector_mm = tvec.reshape(3).astype(np.float32)
+        self.previous_raw_translation_vector_mm = translation_mm.astype(np.float32)
         pose = HeadPose(
             rotation_vector=self.previous_raw_rotation_vector,
             translation_vector_mm=self.previous_raw_translation_vector_mm,
