@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Face tracking pipeline</title>
+  <title>CNC UDP compensation pipeline (Mermaid)</title>
   <style>
     body { font-family: Helvetica, Arial, sans-serif; margin: 1.5rem; background: #fff; }
     .mermaid { background: #fff; }
@@ -18,14 +18,22 @@ flowchart LR
     B ~~~ C
     B --> D["Align depth with RGB"]
     C --> D
-    B --> E["Face landmarks detection from RGB - MediaPipe"]
-    E --> F{"Face detected?"}
-    F -->|Yes| G["Pose solver - depth embedded"]
-    D --> G
-    G --> H["Smoothing - around previous frame"]
-    H --> I["Output: X/Y/Z + Pitch/Yaw/Roll"]
-    F -->|No| J["Return no pose frame"]
+    B --> E["Face landmarks - MediaPipe"]
+    E --> F{"Tracking OK?"}
+    D --> G["Pose solver - depth rigid"]
+    E --> G
+    G --> H["Smoothing"]
+    H --> I["Encode XYZBC vs baseline"]
+    F -->|No| J["Safety hold last offset"]
+    F -->|Yes| I
+    I --> K["Mismatch and rate limits"]
+    J --> K
+    K --> L["UDP XYZBC offset output"]
   </pre>
+  <p>
+    Orthogonal publication figure:
+    <a href="cnc-udp-pipeline-orthogonal.html">cnc-udp-pipeline-orthogonal.html</a>
+  </p>
   <script type="module">
     import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
     mermaid.initialize({ startOnLoad: true });

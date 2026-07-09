@@ -1,24 +1,32 @@
 # Orbbec Head Tracking
 
-Production-oriented 6-DoF head tracking for a single Orbbec Gemini 2L depth sensor.
+Production-oriented 6-DoF head tracking for a single Orbbec Gemini 2L depth sensor, with optional real-time HICON XYZBC compensation over UDP for 5-axis CNC.
 
 ## Setup
 
-This project pins a compatible stack for Gemini 2 L on Windows:
+Stack pinned for Gemini 2L on Windows:
 
-- **Python 3.11** (64-bit)
-- **`pyorbbecsdk2`** ≥ 2.0.18 (PyPI; import as `from pyorbbecsdk import ...`)
-- **`numpy`** ≥ 1.24, &lt; 2 (MediaPipe FaceMesh + Orbbec prebuilt wheels)
-- **`opencv-python`** ≥ 4.10, &lt; 4.13 (avoid NumPy 2-only OpenCV 4.13+)
-- **`mediapipe==0.10.14`** (classic FaceMesh API used by the tracker)
+| Package | Version | Notes |
+|---------|---------|-------|
+| Python | 3.11 (64-bit) | |
+| `pyorbbecsdk2` | ≥ 2.0.18 | Import as `from pyorbbecsdk import ...` |
+| `numpy` | ≥ 1.24, &lt; 2 | MediaPipe + Orbbec wheels |
+| `opencv-python` | ≥ 4.10, &lt; 4.13 | Avoid 4.13+ (NumPy 2) |
+| `mediapipe` | == 0.10.14 | Classic FaceMesh API |
 
-Do not install `opencv-contrib-python` alongside `opencv-python`. Avoid `jax` 0.10+ (pulls NumPy 2).
+Do not install `opencv-contrib-python` alongside `opencv-python`.
 
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip setuptools wheel
 pip install -e .
+
+# CNC streaming (YAML calibration + Mach4 work pose)
+pip install -e ".[cnc]"
+
+# Development / tests
+pip install -e ".[dev,cnc]"
 ```
 
 Verify the package and camera (close Orbbec Viewer first):
@@ -28,111 +36,188 @@ python -c "import orbbec_head_tracking.orbbec_sdk; print('package ok')"
 python scripts\check_orbbec_device.py
 ```
 
-If `orbbec_head_tracking.orbbec_sdk` is missing, you are not in the repo with `pip install -e .` applied — run `git pull` then `pip install -e .` again from the project root.
+On first use on Windows 10, run Orbbec’s metadata script as Administrator ([pyorbbecsdk](https://github.com/orbbec/pyorbbecsdk) `scripts/obsensor_metadata_win10.ps1`), then reboot. If Python reports `count 0` but Orbbec Viewer works, install [OrbbecSDK v2](https://github.com/orbbec/OrbbecSDK_v2/releases) and use `pyorbbecsdk2` ≥ 2.1.1.
 
-Direct SDK check (without the project wrapper):
+## Commands
 
-```powershell
-python -c "from pyorbbecsdk import Context; print(Context().query_devices().get_count())"
-```
+| Command | Module | Purpose |
+|---------|--------|---------|
+| `orbbec-head-tracker` | `tracker.py` | Print pose to stdout (mm + pitch/yaw/roll) |
+| `orbbec-head-viewer` | `tracker.py` | Live RGB + depth windows with pose overlay |
+| `orbbec-head-stream-cnc` | `stream_cnc.py` | Head tracking → HICON UDP XYZBC user offsets |
+| `orbbec-cnc-offset-test` | `cnc_offset_test.py` | Manual offset sliders for controller bring-up |
 
-On first use on Windows 10, run Orbbec’s metadata script as Administrator (from the [pyorbbecsdk repo](https://github.com/orbbec/pyorbbecsdk) `scripts/obsensor_metadata_win10.ps1`), then reboot. If Python sees `count 0` but Orbbec Viewer works, install [OrbbecSDK v2](https://github.com/orbbec/OrbbecSDK_v2/releases) and use `pyorbbecsdk2` ≥ 2.1.1.
-
-## Run
+### Head tracking
 
 ```powershell
 orbbec-head-tracker
-```
-
-The tracker prints translation in millimeters and Euler orientation as pitch, yaw, and roll in degrees. Stop it with `Ctrl+C`.
-
-To show the live RGB visualization with facial anchor points, projected head-pose axes, a pose readout, and a separate aligned depth stream window:
-
-```powershell
 orbbec-head-viewer
-```
-
-You can also launch the same view from the tracker command:
-
-```powershell
 orbbec-head-tracker --view
-```
-
-In the visualization window, press `q` or `Esc` to close it.
-
-Pose smoothing is enabled by default to reduce small X/Z and rotation jitter. For a steadier display when the head is mostly still, lower the alpha values:
-
-```powershell
-orbbec-head-viewer --translation-alpha 0.12 --rotation-alpha 0.18 --translation-deadband-mm 4
-```
-
-For a more responsive display, raise them:
-
-```powershell
-orbbec-head-viewer --translation-alpha 0.45 --rotation-alpha 0.5 --translation-deadband-mm 1
-```
-
-To compare against raw PnP output:
-
-```powershell
 orbbec-head-viewer --no-smoothing
+orbbec-head-viewer --pose-solver pnp
+orbbec-head-tracker --offline-npz "path\to\frames.npz"
 ```
 
-You can stream machine-readable pose updates with:
+Press `q` or `Esc` in viewer windows. Smoothing defaults can be tuned with `--translation-alpha`, `--rotation-alpha`, and `--translation-deadband-mm`.
+
+Offline `.npz` must include `color_bgr`, `depth_mm`, `camera_matrix`, and `distortion_coefficients` (optional `ts`).
+
+### CNC compensation (UDP)
 
 ```powershell
-orbbec-head-tracker --jsonl
-```
-
-To stream translation + Euler rotation over Ethernet (TCP) as JSONL:
-
-```powershell
-orbbec-head-stream-tcp --tcp-host "<receiver-ip-or-hostname>" --tcp-port 5005
-```
-
-To stream live head-motion compensation to a HICON 5-axis controller (XYZBC user offsets over UDP):
-
-```powershell
-pip install -e ".[cnc]"
 orbbec-head-stream-cnc `
   --calibration config/cnc_compensation_example.yaml `
-  --machine-pose=-60,0,40,0,0 `
+  --work-pose-udp-port 62100 `
   --capture-baseline-sec 2 `
   --view
 ```
 
-Add `--view` to show live RGB + depth windows with pose axes and a CNC status panel (XYZBC offsets, UDP link, baseline, safety). Press `q` or `Esc` to stop.
+- **Follow** mode (default): offsets move the machine with the head so the nozzle stays on the scalp trace.
+- Default HICON UDP: controller `192.168.208.35`, local bind `192.168.208.10` (`--device-ip` / `--bind-ip` to override).
+- On tracking loss, spike rejection, or link fault: **hold last offset** (not a blind zero flash). See `safety` in the YAML.
+- `--no-ack-watchdog` for view/dry-run without a connected controller.
+- Static pose fallback: `--machine-pose=X,Y,Z,B,C` or `machine_pose` in YAML.
 
-The CNC stream uses **follow** mode by default: offsets move the machine with the head so the nozzle stays on the scalp trace. Default UDP targets are controller `192.168.208.35` and local bind `192.168.208.10` (override with `--device-ip` / `--bind-ip`). Safety guards zero all axes on tracking loss, low confidence, or UDP link fault. Edit `config/cnc_compensation_example.yaml` for axis limits, camera-to-machine rotation, and machine geometry (`a_mm`, `d_mm` from `layout_design`).
+**Mach4 active work coordinates:** publish G54 DRO values with [`scripts/mach4_work_pose_publisher.lua`](scripts/mach4_work_pose_publisher.lua). Setup: [`docs/mach4-work-pose-udp.md`](docs/mach4-work-pose-udp.md).
 
-You can also run offline on saved frames:
-
-```powershell
-orbbec-head-tracker --offline-npz "path\\to\\frames.npz"
-```
-
-The `.npz` file must include `color_bgr`, `depth_mm`, `camera_matrix`, and `distortion_coefficients` arrays (and may include `ts` timestamps).
-
-The default pose solver uses the aligned depth stream to back-project FaceMesh anchors into camera-space 3D, then fits a rigid transform to the face model. This avoids asking PnP to infer all 3D geometry from 2D landmarks and an approximate face model. To compare against the 2D PnP solver:
+**Offset bring-up without camera:**
 
 ```powershell
-orbbec-head-viewer --pose-solver pnp
+orbbec-cnc-offset-test --device-ip 192.168.208.35 --bind-ip 192.168.208.10
 ```
 
-Native Orbbec SDK and MediaPipe startup warnings are suppressed by default. To show them while debugging:
+## Project layout
+
+```
+config/
+  cnc_compensation_example.yaml   # CNC calibration, limits, safety, motor map
+docs/
+  cnc-udp-pipeline.md           # Production UDP pipeline diagram
+  face-tracking-pipeline.md     # Vision-only pipeline diagram
+  mach4-work-pose-udp.md        # Mach4 → Orbbec work-coordinate bridge
+scripts/
+  check_orbbec_device.py        # Quick camera enumeration
+  mach4_work_pose_publisher.lua # Mach4 PLC Lua publisher
+  pipeline_demos/               # Per-stage OpenCV viewers (RGB, depth, pose, …)
+src/orbbec_head_tracking/       # Main package (see modules below)
+tests/                          # pytest suite
+```
+
+## Package modules
+
+All modules live under `src/orbbec_head_tracking/`.
+
+### Vision pipeline
+
+| Module | Role |
+|--------|------|
+| [`tracker.py`](src/orbbec_head_tracking/tracker.py) | `OrbbecHeadTracker`: capture, align, FaceMesh, pose solvers, CLI (`main`, `viewer_main`) |
+| [`orbbec_sdk.py`](src/orbbec_head_tracking/orbbec_sdk.py) | Re-exports `pyorbbecsdk`; Windows DLL path registration |
+| [`frames.py`](src/orbbec_head_tracking/frames.py) | Color/depth frame decode, intrinsics from stream profile |
+| [`geometry.py`](src/orbbec_head_tracking/geometry.py) | Depth sampling, weighted rigid fit, rotation utilities, Euler helpers |
+| [`smoothing.py`](src/orbbec_head_tracking/smoothing.py) | `PoseSmoother`: translation EMA + rotation SLERP with deadbands |
+| [`config.py`](src/orbbec_head_tracking/config.py) | `TrackerConfig`: solver, smoothing, PnP, depth-rigid parameters |
+| [`constants.py`](src/orbbec_head_tracking/constants.py) | Face model 3D points, landmark indices, axis model for viz |
+| [`types.py`](src/orbbec_head_tracking/types.py) | `HeadPose`, `TrackingFrame` datatypes |
+| [`viz.py`](src/orbbec_head_tracking/viz.py) | `draw_pose_overlay`: landmarks, axes, pose readout on RGB |
+
+Pose solvers (`--pose-solver`):
+
+- **`depth-rigid`** (default): back-project landmarks with aligned depth, rigid fit to face model.
+- **`pnp`**: `cv2.solvePnPRansac` on 2D landmarks + approximate model.
+- **`hybrid`**: depth-rigid initial guess, then PnP refinement.
+
+### CNC compensation pipeline
+
+| Module | Role |
+|--------|------|
+| [`stream_cnc.py`](src/orbbec_head_tracking/stream_cnc.py) | 100 Hz loop: tracker → encode → safety → UDP; CLI entry point |
+| [`cnc_config.py`](src/orbbec_head_tracking/cnc_config.py) | `CncCompensationConfig`, YAML loader, axis limits, safety/mismatch/deadband |
+| [`cnc_offset_encoder.py`](src/orbbec_head_tracking/cnc_offset_encoder.py) | Baseline capture, head Δ → `CncUserOffset` XYZBC; B/C modes; zero latch |
+| [`cnc_kinematics.py`](src/orbbec_head_tracking/cnc_kinematics.py) | 5-axis FK, tool normal, pose-aware B/C IK, XYZ tip correction |
+| [`cnc_safety.py`](src/orbbec_head_tracking/cnc_safety.py) | Rate limits, spike reject, hold-last, recovery window after loss |
+| [`cnc_mismatch.py`](src/orbbec_head_tracking/cnc_mismatch.py) | Required vs sent offset tracking; optional snap / integral correction |
+| [`cnc_protocol.py`](src/orbbec_head_tracking/cnc_protocol.py) | `MSG_SET_AXIS_USEROFFSET` pack/unpack (48-byte UDP), motor map |
+| [`cnc_udp_streamer.py`](src/orbbec_head_tracking/cnc_udp_streamer.py) | UDP bind/send, ACK watchdog, link status |
+| [`cnc_work_pose_client.py`](src/orbbec_head_tracking/cnc_work_pose_client.py) | Receive Mach4 active work-coordinate JSON over UDP |
+| [`cnc_viz.py`](src/orbbec_head_tracking/cnc_viz.py) | CNC status panel overlay (offsets, link, safety, work pose) |
+| [`cnc_offset_test.py`](src/orbbec_head_tracking/cnc_offset_test.py) | Interactive OpenCV slider UI for manual offset testing |
+
+### Data flow (CNC)
+
+```
+Orbbec → tracker → smoothing → CncOffsetEncoder (vs baseline + live work pose)
+       → CncMismatchTracker → CncSafetyGuards → UserOffsetMessage → CncUdpStreamer → HICON
+```
+
+Diagram: [`docs/cnc-udp-pipeline.md`](docs/cnc-udp-pipeline.md) · Vision-only: [`docs/face-tracking-pipeline.md`](docs/face-tracking-pipeline.md)
+
+## Configuration
+
+[`config/cnc_compensation_example.yaml`](config/cnc_compensation_example.yaml) — key sections:
+
+| Section | Purpose |
+|---------|---------|
+| `machine` | Link lengths `a_mm`, `d_mm`, gap geometry for FK |
+| `camera_extrinsic` | 3×3 camera → machine rotation |
+| `bc_mode` | `tool_normal_ik` or `camera_rvec` for B/C encoding |
+| `machine_pose` | Fallback nozzle XYZBC (work coords) |
+| `work_pose_udp` | Listen for live Mach4 work pose (port 62100) |
+| `motor_map` | Logical XYZBC → HICON motor indices 0–7 |
+| `axis_limits` | Per-axis compensation clamps |
+| `safety` | Confidence gate, rate limits, hold-last, recovery ticks |
+| `mismatch` | Tracking-error correction (`kp`/`ki`, snap) |
+| `offset_deadband` | Hysteresis near zero |
+
+## Scripts
+
+| Path | Purpose |
+|------|---------|
+| [`scripts/check_orbbec_device.py`](scripts/check_orbbec_device.py) | List connected Orbbec devices |
+| [`scripts/mach4_work_pose_publisher.lua`](scripts/mach4_work_pose_publisher.lua) | Mach4 `mc.mcAxisGetPos` → UDP JSON |
+| [`scripts/pipeline_demos/`](scripts/pipeline_demos/) | Stage-by-stage viewers: RGB, depth, align, landmarks, pose (`demo_all.py`) |
+
+## Tests
 
 ```powershell
-orbbec-head-tracker --verbose
+python -m pytest tests/ -q --ignore=tests/test_tracker_integration.py
 ```
 
-## Architecture
+| Test file | Covers |
+|-----------|--------|
+| `test_geometry.py` | Rigid fit, depth sampling, rotation math |
+| `test_smoothing.py` | Pose smoother deadbands and SLERP |
+| `test_cnc_protocol.py` | UDP message pack/unpack golden bytes |
+| `test_cnc_config.py` | YAML calibration loading |
+| `test_cnc_kinematics.py` | FK, B/C IK, pose-aware solver |
+| `test_cnc_offset_encoder.py` | Baseline encode, B/C modes, limits |
+| `test_cnc_bc_euler.py` | Euler → B/C mapping |
+| `test_cnc_mismatch.py` | Mismatch tracker, preserve-sent |
+| `test_cnc_safety_catchup.py` | Rate limit, catch-up, spike reject |
+| `test_cnc_hold_zero_drift.py` | Hold-last and recovery after loss |
+| `test_cnc_zero_latch.py` | Per-axis zero hysteresis |
+| `test_cnc_work_pose_client.py` | Mach4 work-pose UDP parser |
+| `test_cnc_offset_test.py` | Offset test CLI helpers |
 
-- Acquire synchronized color and depth frames through `pyorbbecsdk2` (`from pyorbbecsdk import Pipeline`).
-- Align depth to color with `AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)`.
-- Copy raw SDK frame buffers before NumPy/OpenCV decoding.
-- Scale `Y16` depth frames with `depth_frame.get_depth_scale()` into `float32` millimeters.
-- Extract MediaPipe FaceMesh landmarks.
-- Estimate pose with one of:
-  - `depth-rigid`: depth-assisted rigid fit (with distortion-consistent depth rays).
-  - `pnp`: `cv2.solvePnPRansac` on 2D landmarks.
-  - `hybrid`: depth-assisted rigid fit, then `cv2.solvePnPRansac` refinement.
+## Architecture notes
+
+**Vision**
+
+1. Synchronized color + depth via `pyorbbecsdk2` `Pipeline`.
+2. Hardware depth-to-color align (`AlignFilter`).
+3. Defensive `.copy()` on SDK buffers before decode.
+4. Depth scaled to mm with `get_depth_scale()`.
+5. MediaPipe FaceMesh on RGB.
+6. 6-DoF pose (depth-rigid / PnP / hybrid).
+7. Optional temporal smoothing.
+
+**CNC**
+
+1. Capture head baseline for ~2 s at print start.
+2. Each tick: head Δ vs baseline → proposed XYZBC offset.
+3. Live nozzle pose from Mach4 work UDP (or YAML fallback) for pose-aware B/C.
+4. Mismatch layer reconciles required vs sent offset.
+5. Safety: rate limits, spike filter, hold on loss, recovery ramp.
+6. Stream `MSG_SET_AXIS_USEROFFSET` to HICON at 100 Hz.
+
+Native Orbbec SDK and MediaPipe stderr is suppressed by default; use `--verbose` on tracker/CNC CLIs to show it.

@@ -21,7 +21,7 @@ class CncUdpStreamerConfig:
     update_period_ms: float = 10.0
     ack_timeout_ms: float = 2000.0
     ack_watchdog_enabled: bool = True
-    send_zero_on_link_fault: bool = True
+    send_zero_on_link_fault: bool = False
     motor_map: MotorAxisMap | None = None
 
 

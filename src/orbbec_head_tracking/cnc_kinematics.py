@@ -96,6 +96,109 @@ def tool_normal_from_bc(b_deg: float, c_deg: float, machine: MachineConfig) -> n
     return n
 
 
+def numerical_jacobian_tool_normal_bc(
+    b_deg: float,
+    c_deg: float,
+    machine: MachineConfig,
+    eps_deg: float = 0.05,
+) -> np.ndarray:
+    n0 = tool_normal_from_bc(b_deg, c_deg, machine)
+    jac = np.zeros((3, 2), dtype=np.float64)
+    n_b = tool_normal_from_bc(b_deg + eps_deg, c_deg, machine)
+    jac[:, 0] = (n_b - n0) / eps_deg
+    n_c = tool_normal_from_bc(b_deg, c_deg + eps_deg, machine)
+    jac[:, 1] = (n_c - n0) / eps_deg
+    return jac
+
+
+def solve_bc_delta_for_normal_target(
+    n_target: np.ndarray,
+    b_deg: float,
+    c_deg: float,
+    machine: MachineConfig,
+    *,
+    max_iter: int = 15,
+    tol: float = 1e-5,
+) -> tuple[float, float]:
+    """Deprecated internal path; prefer solve_bc_delta_pose_aware."""
+    target = np.asarray(n_target, dtype=np.float64).reshape(3)
+    norm = float(np.linalg.norm(target))
+    if norm < 1e-12:
+        return 0.0, 0.0
+    target = target / norm
+    n0 = tool_normal_from_bc(b_deg, c_deg, machine)
+    dn = target - n0
+    if float(np.linalg.norm(dn)) < tol:
+        return 0.0, 0.0
+    jac = numerical_jacobian_tool_normal_bc(b_deg, c_deg, machine)
+    step, *_ = np.linalg.lstsq(jac, dn, rcond=None)
+    return float(step[0]), float(step[1])
+
+
+def solve_bc_delta_pose_aware(
+    r_current_cam: np.ndarray,
+    r_reference_cam: np.ndarray,
+    camera_to_machine: np.ndarray,
+    b_deg: float,
+    c_deg: float,
+    machine: MachineConfig,
+    *,
+    b_cam_axis: str,
+    c_cam_axis: str,
+    b_sign: float,
+    c_sign: float,
+    follow_sign: float,
+    max_correction_deg: float = 8.0,
+    dn_threshold: float = 1e-4,
+) -> tuple[float, float]:
+    """Stable pose-aware B/C: camera-rvec baseline + Jacobian residual correction."""
+    rx_d, ry_d, rz_d = camera_rvec_delta_degrees(r_current_cam, r_reference_cam)
+    q_b, q_c = bc_from_camera_rvec_delta(
+        rx_d,
+        ry_d,
+        rz_d,
+        b_axis=b_cam_axis,
+        c_axis=c_cam_axis,
+        b_sign=1.0,
+        c_sign=1.0,
+        follow_sign=1.0,
+    )
+    q_cam = np.array(
+        [follow_sign * b_sign * q_b, follow_sign * c_sign * q_c],
+        dtype=np.float64,
+    )
+    r_delta_cam = rotation_delta_matrix(r_reference_cam, r_current_cam)
+    r_delta_m = rotation_matrix_in_machine_frame(r_delta_cam, camera_to_machine)
+    n_ref = camera_to_machine @ (r_reference_cam @ np.array([0.0, 0.0, 1.0], dtype=np.float64))
+    n_norm = float(np.linalg.norm(n_ref))
+    if n_norm < 1e-12:
+        return float(q_cam[0]), float(q_cam[1])
+    n_ref = n_ref / n_norm
+    dn = r_delta_m @ n_ref - n_ref
+    if float(np.linalg.norm(dn)) < dn_threshold:
+        return float(q_cam[0]), float(q_cam[1])
+    jac = numerical_jacobian_tool_normal_bc(b_deg, c_deg, machine)
+    residual = dn - jac @ q_cam
+    delta, *_ = np.linalg.lstsq(jac, residual, rcond=None)
+    delta_norm = float(np.linalg.norm(delta))
+    if delta_norm > max_correction_deg:
+        delta = delta * (max_correction_deg / delta_norm)
+    q = q_cam + delta
+    return float(q[0]), float(q[1])
+
+
+def tip_rotation_delta_from_head(
+    r_delta_machine: np.ndarray,
+    head_center_machine: np.ndarray,
+    tip_machine: np.ndarray,
+) -> np.ndarray:
+    lever = np.asarray(tip_machine, dtype=np.float64).reshape(3) - np.asarray(
+        head_center_machine, dtype=np.float64
+    ).reshape(3)
+    r_delta = np.asarray(r_delta_machine, dtype=np.float64)
+    return r_delta @ lever - lever
+
+
 def find_angle(comp_v: np.ndarray, proj_v: np.ndarray) -> float:
     denom = np.linalg.norm(comp_v) * np.linalg.norm(proj_v)
     if denom == 0:
@@ -121,6 +224,96 @@ def find_baxis_angle(normal: np.ndarray) -> float:
     if c_vb[2] >= 0:
         return float(np.sign(norm_v[1]) * (find_angle(-c_vb, p_vb) - 90))
     return float(np.sign(norm_v[1]) * (270 - find_angle(-c_vb, p_vb)))
+
+
+def rotation_matrix_in_machine_frame(
+    r_cam: np.ndarray,
+    camera_to_machine: np.ndarray,
+) -> np.ndarray:
+    r_cm = np.asarray(camera_to_machine, dtype=np.float64)
+    r_cam = np.asarray(r_cam, dtype=np.float64)
+    return r_cm @ r_cam @ r_cm.T
+
+
+def shortest_arc_delta_deg(current_deg: float, reference_deg: float) -> float:
+    delta = float(current_deg) - float(reference_deg)
+    delta = (delta + 180.0) % 360.0 - 180.0
+    return delta
+
+
+def euler_delta_machine_degrees(
+    r_current_cam: np.ndarray,
+    r_reference_cam: np.ndarray,
+    camera_to_machine: np.ndarray,
+) -> tuple[float, float, float]:
+    from .geometry import rotation_matrix_to_euler_degrees
+
+    r_delta_cam = rotation_delta_matrix(r_reference_cam, r_current_cam)
+    r_delta_m = rotation_matrix_in_machine_frame(r_delta_cam, camera_to_machine)
+    pitch, yaw, roll = rotation_matrix_to_euler_degrees(r_delta_m)
+    return float(pitch), float(yaw), float(roll)
+
+
+def camera_rvec_delta_degrees(
+    r_current_cam: np.ndarray,
+    r_reference_cam: np.ndarray,
+) -> tuple[float, float, float]:
+    import cv2
+
+    r_delta_cam = rotation_delta_matrix(r_reference_cam, r_current_cam)
+    rvec, _ = cv2.Rodrigues(np.asarray(r_delta_cam, dtype=np.float64))
+    deg = np.rad2deg(np.asarray(rvec, dtype=np.float64).reshape(3))
+    return float(deg[0]), float(deg[1]), float(deg[2])
+
+
+_CAMERA_RVEC_COMPONENTS = ("x", "y", "z")
+_EULER_COMPONENTS = ("pitch", "yaw", "roll")
+
+
+def bc_from_camera_rvec_delta(
+    rx_delta_deg: float,
+    ry_delta_deg: float,
+    rz_delta_deg: float,
+    *,
+    b_axis: str,
+    c_axis: str,
+    b_sign: float,
+    c_sign: float,
+    follow_sign: float,
+) -> tuple[float, float]:
+    components = {
+        "x": rx_delta_deg,
+        "y": ry_delta_deg,
+        "z": rz_delta_deg,
+    }
+    if b_axis not in components or c_axis not in components:
+        raise ValueError("bc camera rvec axes must be x, y, or z")
+    b = follow_sign * b_sign * float(components[b_axis])
+    c = follow_sign * c_sign * float(components[c_axis])
+    return b, c
+
+
+def bc_from_euler_delta(
+    pitch_delta_deg: float,
+    yaw_delta_deg: float,
+    roll_delta_deg: float,
+    *,
+    b_axis: str,
+    c_axis: str,
+    b_sign: float,
+    c_sign: float,
+    follow_sign: float,
+) -> tuple[float, float]:
+    components = {
+        "pitch": pitch_delta_deg,
+        "yaw": yaw_delta_deg,
+        "roll": roll_delta_deg,
+    }
+    if b_axis not in components or c_axis not in components:
+        raise ValueError("bc euler axes must be pitch, yaw, or roll")
+    b = follow_sign * b_sign * float(components[b_axis])
+    c = follow_sign * c_sign * float(components[c_axis])
+    return b, c
 
 
 def bc_from_normal(normal: np.ndarray) -> tuple[float, float]:

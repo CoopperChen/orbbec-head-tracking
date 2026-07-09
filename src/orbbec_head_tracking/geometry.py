@@ -87,6 +87,35 @@ def rotation_angle_deg(r_a: np.ndarray, r_b: np.ndarray) -> float:
     return float(np.degrees(np.arccos(cos_theta)))
 
 
+def stabilize_translation_mm(
+    translation_mm: np.ndarray,
+    previous_mm: np.ndarray | None,
+    *,
+    max_jump_mm: float = 25.0,
+) -> np.ndarray:
+    current = np.asarray(translation_mm, dtype=np.float64).reshape(3)
+    if previous_mm is None:
+        return current.astype(np.float32)
+    previous = np.asarray(previous_mm, dtype=np.float64).reshape(3)
+    delta = current - previous
+    jump = float(np.linalg.norm(delta))
+    limit = float(max_jump_mm)
+    if jump > limit > 0.0:
+        delta = delta * (limit / jump)
+    return (previous + delta).astype(np.float32)
+
+
+def depth_inlier_mask(depths_mm: np.ndarray, max_deviation_mm: float) -> np.ndarray:
+    depths = np.asarray(depths_mm, dtype=np.float64).reshape(-1)
+    valid = np.isfinite(depths) & (depths > 0.0)
+    if not np.any(valid):
+        return np.zeros_like(valid, dtype=bool)
+    median = float(np.median(depths[valid]))
+    mad = float(np.median(np.abs(depths[valid] - median)))
+    threshold = max(float(max_deviation_mm), 2.5 * mad, 8.0)
+    return valid & (np.abs(depths - median) <= threshold)
+
+
 def stabilize_rotation_matrix(
     r_new: np.ndarray,
     r_prev: np.ndarray | None,

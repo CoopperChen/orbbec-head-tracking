@@ -6,19 +6,32 @@ machine:
   c0_deg: 90
   b0_deg: 0
 
+# Camera at the +X machine boundary, optical axis toward -X (subject/head faces +X).
+# OpenCV camera frame: +X right, +Y down, +Z forward (into scene).
+# Assumes camera mounted upright with top toward machine +Z.
 camera_extrinsic:
   rotation:
+    - [0.0, 0.0, -1.0]
     - [1.0, 0.0, 0.0]
-    - [0.0, 1.0, 0.0]
-    - [0.0, 0.0, 1.0]
+    - [0.0, -1.0, 0.0]
 
-reference_normal: [0.0, 0.0, 1.0]
+reference_normal: [0.0, 0.0, 1.0]  # machine frame fallback when pose normal is degenerate
 
-machine_pose: [-60, 0, 40, 0, 0]
+# B/C: stable camera-rvec baseline + small pose-aware Jacobian correction.
+# Nozzle pose: live from Mach4 work_pose_udp, or fallback machine_pose below.
+bc_mode: tool_normal_ik
+bc_camera_rvec_mapping:
+  b: z
+  c: y
+
+# B/C offset sign vs head rotation (HICON convention).
+bc_axis_sign:
+  b: -1
+  c: -1
 
 axis_limits:
-  x_mm: [-25, 25]
-  y_mm: [-25, 25]
+  x_mm: [-50, 50]
+  y_mm: [-50, 50]
   z_mm: [-25, 25]
   b_deg: [-15, 15]
   c_deg: [-15, 15]
@@ -28,6 +41,15 @@ deg_to_axis_unit: 1.0
 solver: decoupled
 offset_mode: follow
 update_period_ms: 10
+
+# Live active work coordinates from Mach4 (mc.mcAxisGetPos) over UDP JSON.
+work_pose_udp:
+  port: 62100
+  bind_ip: 0.0.0.0
+  stale_ms: 500
+
+# Fallback nozzle pose when Mach4 UDP is off or stale.
+machine_pose: [117.4424, 116.5834, -14.2, 61.5690, 20.7155]
 
 # HICON motor indices (0-7). This machine drives X with two motors.
 motor_map:
@@ -39,14 +61,42 @@ motor_map:
 
 safety:
   min_confidence: 0.6
-  on_tracking_loss: zero_offsets
-  on_low_confidence: zero_offsets
+  on_tracking_loss: hold_last
+  on_low_confidence: hold_last
+  on_head_speed_exceeded: hold_last
   max_head_speed_mm_s: 80
+  head_speed_filter_alpha: 0.25
+  head_speed_exceed_ticks: 3
   vmax_mm_s:
-    x: 30
-    y: 30
-    z: 15
+    x: 60
+    y: 60
+    z: 30
   vmax_deg_s:
-    b: 10
-    c: 10
+    b: 25
+    c: 25
+  spike_multiplier: 10
+  spike_axes: [x, y, z, b, c]
+  catch_up_multiplier: 3.0
+  catch_up_error_mm: 0.5
+  catch_up_error_deg: 0.3
+  recovery_ticks_after_hold: 20
   require_baseline_before_stream: true
+
+mismatch:
+  enabled: true
+  kp: 0.0
+  ki: 0.0
+  integral_limit_mm: 10
+  integral_limit_deg: 10
+  recovery_ticks_after_hold: 10
+  snap_enabled: false
+  snap_head_speed_mm_s: 5
+  snap_error_mm: 2.0
+  # fault_error_mm: 15
+
+offset_deadband:
+  enabled: true
+  enter_translation_mm: 0.6
+  exit_translation_mm: 1.2
+  enter_rotation_deg: 0.5
+  exit_rotation_deg: 1.0

@@ -1,8 +1,10 @@
 %%{init: {"flowchart": {"curve": "stepAfter"}}}%%
-flowchart TD
+%%{init: {"flowchart": {"curve": "stepAfter"}}}%%
+flowchart LR
     A["Orbbec Gemini 2L"]
     A --> B["RGB frames"]
     A --> C["Depth frames"]
+    B ~~~ C
     B --> D["Align depth with RGB"]
     C --> D
     B --> E["Face landmarks detection from RGB - MediaPipe"]
