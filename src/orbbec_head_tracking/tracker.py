@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,9 @@ class TrackingFrame:
     color_bgr: np.ndarray
     depth_mm: np.ndarray
     pose: HeadPose | None
+
+
+from .pipeline_timing import VisionStageTiming
 
 
 class PoseSmoother:
@@ -513,7 +517,10 @@ class OrbbecHeadTracker:
             return None
         return frame.pose
 
-    def read_frame(self) -> TrackingFrame | None:
+    def read_frame(
+        self,
+        timing: VisionStageTiming | None = None,
+    ) -> TrackingFrame | None:
         if (
             self.pipeline is None
             or self.align_filter is None
@@ -523,6 +530,7 @@ class OrbbecHeadTracker:
         ):
             raise RuntimeError("Tracker must be started before reading poses")
 
+        loop_start = time.perf_counter()
         frames = self.pipeline.wait_for_frames(self.config.frame_timeout_ms)
         if frames is None:
             return None
@@ -539,6 +547,10 @@ class OrbbecHeadTracker:
 
         color_bgr = _decode_color_frame(color_frame)
         depth_mm = _decode_depth_frame_mm(depth_frame)
+        if timing is not None:
+            timing.frame_acquire_align_ms = (time.perf_counter() - loop_start) * 1000.0
+
+        landmark_start = time.perf_counter()
         color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
         with _suppress_native_stderr(
             self.config.suppress_mediapipe_native_stderr
@@ -546,6 +558,10 @@ class OrbbecHeadTracker:
         ):
             result = self.face_mesh.process(color_rgb)
         if not result.multi_face_landmarks:
+            if timing is not None:
+                timing.landmark_ms = (time.perf_counter() - landmark_start) * 1000.0
+                timing.pose_estimate_ms = 0.0
+                timing.temporal_filter_ms = 0.0
             self._mark_pose_missed()
             return TrackingFrame(color_bgr=color_bgr, depth_mm=depth_mm, pose=None)
 
@@ -555,6 +571,10 @@ class OrbbecHeadTracker:
             image_width,
             image_height,
         )
+        if timing is not None:
+            timing.landmark_ms = (time.perf_counter() - landmark_start) * 1000.0
+
+        pose_start = time.perf_counter()
         if self.config.pose_solver == "depth-rigid":
             max_depth_dev = float(getattr(self.config, "max_landmark_depth_deviation_mm", 120.0))
             object_points, camera_points, sampled_depth, fit_weights = _points_to_camera_3d(
@@ -565,6 +585,9 @@ class OrbbecHeadTracker:
                 max_depth_deviation_mm=max_depth_dev,
             )
             if len(camera_points) < self.config.min_depth_points:
+                if timing is not None:
+                    timing.pose_estimate_ms = (time.perf_counter() - pose_start) * 1000.0
+                    timing.temporal_filter_ms = 0.0
                 self._mark_pose_missed()
                 return TrackingFrame(color_bgr=color_bgr, depth_mm=depth_mm, pose=None)
             rvec, tvec = _fit_rigid_transform_robust(object_points, camera_points, fit_weights)
@@ -592,6 +615,9 @@ class OrbbecHeadTracker:
                 flags=cv2.SOLVEPNP_ITERATIVE,
             )
             if not ok:
+                if timing is not None:
+                    timing.pose_estimate_ms = (time.perf_counter() - pose_start) * 1000.0
+                    timing.temporal_filter_ms = 0.0
                 self._mark_pose_missed()
                 return TrackingFrame(color_bgr=color_bgr, depth_mm=depth_mm, pose=None)
 
@@ -637,9 +663,22 @@ class OrbbecHeadTracker:
             inliers=inliers,
         )
         self.missed_pose_count = 0
+        if timing is not None:
+            timing.pose_estimate_ms = (time.perf_counter() - pose_start) * 1000.0
+
         if self.config.smoothing_enabled:
+            smooth_start = time.perf_counter()
             pose = self.pose_smoother.smooth(pose)
+            if timing is not None:
+                timing.temporal_filter_ms = (time.perf_counter() - smooth_start) * 1000.0
+        elif timing is not None:
+            timing.temporal_filter_ms = 0.0
         return TrackingFrame(color_bgr=color_bgr, depth_mm=depth_mm, pose=pose)
+
+    def read_frame_timed(self) -> tuple[TrackingFrame | None, VisionStageTiming]:
+        timing = VisionStageTiming()
+        frame = self.read_frame(timing=timing)
+        return frame, timing
 
     def _mark_pose_missed(self) -> None:
         self.missed_pose_count += 1

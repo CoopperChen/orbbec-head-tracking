@@ -45,6 +45,7 @@ On first use on Windows 10, run Orbbec’s metadata script as Administrator ([py
 | `orbbec-head-tracker` | `tracker.py` | Print pose to stdout (mm + pitch/yaw/roll) |
 | `orbbec-head-viewer` | `tracker.py` | Live RGB + depth windows with pose overlay |
 | `orbbec-head-stream-cnc` | `stream_cnc.py` | Head tracking → HICON UDP XYZBC user offsets |
+| `orbbec-cnc-pipeline-benchmark` | `benchmark_cnc_pipeline.py` | Per-stage latency benchmark + raw CSV export |
 | `orbbec-cnc-offset-test` | `cnc_offset_test.py` | Manual offset sliders for controller bring-up |
 
 ### Head tracking
@@ -84,6 +85,48 @@ orbbec-head-stream-cnc `
 
 ```powershell
 orbbec-cnc-offset-test --device-ip 192.168.208.35 --bind-ip 192.168.208.10
+```
+
+### Pipeline latency benchmark
+
+Measure per-stage processing time with `time.perf_counter()` and export raw CSV for statistical analysis (median, P95, etc.). Runs the full CNC loop at a lower control rate (default 30 Hz) so each stage can be timed without overrunning the period.
+
+**Activate the venv first** — CLI scripts are installed under `.venv\Scripts\` when you run `pip install -e ".[cnc,dev]"`. After adding new entry points, reinstall once:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[cnc,dev]"
+```
+
+```powershell
+orbbec-cnc-pipeline-benchmark `
+  --calibration config/cnc_compensation_example.yaml `
+  --loops 300 --warmup 30 `
+  --output results/pipeline_timing.csv `
+  --summary results/pipeline_timing_summary.csv `
+  --verbose
+```
+
+Per-loop CSV columns:
+
+| Column | Stage |
+|--------|--------|
+| `frame_acquire_align_ms` | Orbbec wait + depth-to-color align + decode |
+| `landmark_ms` | MediaPipe FaceMesh |
+| `pose_estimate_ms` | Depth-rigid 6-DoF + stabilization |
+| `temporal_filter_ms` | Pose smoother |
+| `encode_ms` | XYZBC offset encoding |
+| `safety_rate_limit_ms` | Mismatch targeting + safety guards |
+| `udp_ms` | UDP pack/send (+ ACK poll) |
+| `loop_total_ms` | Full loop processing time |
+| `loop_period_ms` | Wall time between loop starts |
+
+All loops are written to CSV (including warmup). The stdout summary excludes the first `--warmup` samples (default 30). Run **without** `--view` for pure processing latency. ACK watchdog is off by default (`--ack-watchdog` to enable).
+
+Without activating the venv:
+
+```powershell
+& ".\.venv\Scripts\orbbec-cnc-pipeline-benchmark.exe" --calibration config/cnc_compensation_example.yaml
 ```
 
 ## Project layout
@@ -132,6 +175,8 @@ Pose solvers (`--pose-solver`):
 | Module | Role |
 |--------|------|
 | [`stream_cnc.py`](src/orbbec_head_tracking/stream_cnc.py) | 100 Hz loop: tracker → encode → safety → UDP; CLI entry point |
+| [`benchmark_cnc_pipeline.py`](src/orbbec_head_tracking/benchmark_cnc_pipeline.py) | Per-stage latency benchmark; CSV export for paper stats |
+| [`pipeline_timing.py`](src/orbbec_head_tracking/pipeline_timing.py) | `LoopTimingSample`, CSV writer, median/P95 summary helpers |
 | [`cnc_config.py`](src/orbbec_head_tracking/cnc_config.py) | `CncCompensationConfig`, YAML loader, axis limits, safety/mismatch/deadband |
 | [`cnc_offset_encoder.py`](src/orbbec_head_tracking/cnc_offset_encoder.py) | Baseline capture, head Δ → `CncUserOffset` XYZBC; B/C modes; zero latch |
 | [`cnc_kinematics.py`](src/orbbec_head_tracking/cnc_kinematics.py) | 5-axis FK, tool normal, pose-aware B/C IK, XYZ tip correction |
@@ -198,6 +243,7 @@ python -m pytest tests/ -q --ignore=tests/test_tracker_integration.py
 | `test_cnc_zero_latch.py` | Per-axis zero hysteresis |
 | `test_cnc_work_pose_client.py` | Mach4 work-pose UDP parser |
 | `test_cnc_offset_test.py` | Offset test CLI helpers |
+| `test_pipeline_timing.py` | Benchmark CSV writer and summary stats |
 
 ## Architecture notes
 

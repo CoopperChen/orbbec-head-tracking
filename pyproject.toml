@@ -26,6 +26,7 @@ cnc = [
 orbbec-head-tracker = "orbbec_head_tracking.tracker:main"
 orbbec-head-viewer = "orbbec_head_tracking.tracker:viewer_main"
 orbbec-head-stream-cnc = "orbbec_head_tracking.stream_cnc:main"
+orbbec-cnc-pipeline-benchmark = "orbbec_head_tracking.benchmark_cnc_pipeline:main"
 orbbec-cnc-offset-test = "orbbec_head_tracking.cnc_offset_test:main"
 
 [tool.setuptools.packages.find]
