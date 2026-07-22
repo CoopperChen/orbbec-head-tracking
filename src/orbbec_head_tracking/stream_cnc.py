@@ -5,6 +5,7 @@ import contextlib
 import os
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -332,8 +333,21 @@ def _build_tracker_config(args: argparse.Namespace) -> TrackerConfig:
     )
 
 
+def _default_calibration_path() -> str:
+    """Prefer cwd config/, else repo-root config/ next to the package source tree."""
+    name = "cnc_compensation_example.yaml"
+    candidates = (
+        Path("config") / name,
+        Path(__file__).resolve().parents[2] / "config" / name,
+    )
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return str(candidates[0])
+
+
 def _build_compensation_config(args: argparse.Namespace) -> CncCompensationConfig:
-    config = load_compensation_config(args.calibration) if args.calibration else CncCompensationConfig()
+    config = load_compensation_config(args.calibration)
     offset_deadband = config.offset_deadband
     if args.human_profile:
         offset_deadband = OffsetDeadbandConfig(
@@ -373,7 +387,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--device-ip", type=str, default="192.168.208.35")
     parser.add_argument("--bind-ip", type=str, default="192.168.208.10")
     parser.add_argument("--device-port", type=int, default=62095)
-    parser.add_argument("--calibration", type=str, default=None)
+    parser.add_argument(
+        "--calibration",
+        type=str,
+        default=_default_calibration_path(),
+        help="CNC compensation YAML (default: config/cnc_compensation_example.yaml)",
+    )
     parser.add_argument("--machine-pose", type=str, default=None, help="Fallback X,Y,Z,B,C work pose")
     parser.add_argument(
         "--work-pose-udp-port",

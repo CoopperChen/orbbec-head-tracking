@@ -21,6 +21,9 @@ dev = [
 cnc = [
     "pyyaml>=6.0",
 ]
+figures = [
+    "matplotlib>=3.7",
+]
 
 [project.scripts]
 orbbec-head-tracker = "orbbec_head_tracking.tracker:main"

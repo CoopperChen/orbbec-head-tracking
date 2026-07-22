@@ -67,11 +67,12 @@ Offline `.npz` must include `color_bgr`, `depth_mm`, `camera_matrix`, and `disto
 
 ```powershell
 orbbec-head-stream-cnc `
-  --calibration config/cnc_compensation_example.yaml `
   --work-pose-udp-port 62100 `
   --capture-baseline-sec 2 `
   --view
 ```
+
+`--calibration` defaults to `config/cnc_compensation_example.yaml` (cwd, else repo root). Override with `--calibration path\to\file.yaml`.
 
 - **Follow** mode (default): offsets move the machine with the head so the nozzle stays on the scalp trace.
 - Default HICON UDP: controller `192.168.208.35`, local bind `192.168.208.10` (`--device-ip` / `--bind-ip` to override).
