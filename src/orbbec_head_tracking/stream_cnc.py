@@ -5,6 +5,7 @@ import contextlib
 import os
 import time
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,9 +14,10 @@ import numpy as np
 
 from .cnc_config import CncCompensationConfig, MachinePose, OffsetDeadbandConfig, load_compensation_config
 from .cnc_mismatch import CncMismatchTracker
-from .cnc_offset_encoder import CncOffsetEncoder, CncUserOffset
+from .cnc_offset_encoder import CncOffsetEncoder, CncUserOffset, offset_is_zero
 from .cnc_protocol import UserOffsetMessage
 from .cnc_safety import CncSafetyGuards, SafetyDecision
+from .cnc_stability_log import StabilityCsvLogger
 from .cnc_udp_streamer import CncUdpStreamer, CncUdpStreamerConfig
 from .cnc_viz import draw_cnc_status_panel
 from .cnc_work_pose_client import WorkPoseUdpClient
@@ -24,6 +26,9 @@ from .tracker import OrbbecHeadTracker, colorize_depth_mm, draw_pose_overlay
 
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+DEFAULT_LOG_DIR = Path("results")
+DEFAULT_LOG_STEM = "cnc_stream"
 
 
 def main() -> None:
@@ -45,9 +50,10 @@ def main() -> None:
         )
     )
     work_pose_client = _open_work_pose_client(args, comp_config)
+    logger = _open_stability_logger(args)
 
     period_sec = comp_config.update_period_ms / 1000.0
-    baseline_deadline = time.monotonic() + max(0.0, args.capture_baseline_sec)
+    duration_sec = args.duration_sec if args.duration_sec and args.duration_sec > 0 else None
     baseline_translations: list[np.ndarray] = []
     baseline_rvecs: list[np.ndarray] = []
     window_name = args.window_name
@@ -61,7 +67,14 @@ def main() -> None:
                 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
                 cv2.namedWindow(depth_window_name, cv2.WINDOW_NORMAL)
             streamer.connect()
-            next_tick = time.monotonic()
+            # Time from the first loop tick, so camera start-up does not eat the
+            # baseline window or the requested run duration.
+            start_time = time.monotonic()
+            baseline_deadline = start_time + max(0.0, args.capture_baseline_sec)
+            next_tick = start_time
+            last_sent = CncUserOffset.zero()
+            prev_tick_sec: float | None = None
+            step_monitor = StepMonitor(args.step_warn_mm, args.step_warn_deg)
             try:
                 while True:
                     now = time.monotonic()
@@ -69,13 +82,20 @@ def main() -> None:
                         time.sleep(min(0.001, next_tick - now))
                         continue
                     next_tick += period_sec
+                    elapsed = now - start_time
+                    loop_dt_ms = (
+                        (now - prev_tick_sec) * 1000.0 if prev_tick_sec is not None else None
+                    )
+                    prev_tick_sec = now
 
                     frame = tracker.read_frame()
                     tracking_ok = frame is not None and frame.pose is not None
+                    pose = frame.pose if frame is not None else None
                     confidence = 0.0
                     head_speed = 0.0
                     proposed = CncUserOffset.zero()
                     target = CncUserOffset.zero()
+                    head_delta = None
                     mismatch_report = None
                     baseline_capturing = (
                         not encoder.baseline_ready and now <= baseline_deadline and tracking_ok
@@ -83,8 +103,7 @@ def main() -> None:
 
                     require_live_work_pose = args.require_work_pose or comp_config.work_pose_udp.require_live
                     work_pose_missing = False
-                    if tracking_ok and frame is not None and frame.pose is not None:
-                        pose = frame.pose
+                    if tracking_ok and pose is not None:
                         confidence = float(getattr(pose, "confidence", 1.0))
 
                         if not encoder.baseline_ready:
@@ -114,14 +133,14 @@ def main() -> None:
                                     np.asarray(pose.translation_vector_mm, dtype=np.float64).reshape(3),
                                     now,
                                 )
-                                d_t_machine = encoder.head_delta_machine_mm(pose)
+                                head_delta = encoder.head_delta_machine_mm(pose)
                                 target, mismatch_report = mismatch.target(
                                     proposed,
                                     safety.last_offset,
                                     dt_sec=period_sec,
                                     head_speed_mm_s=head_speed,
-                                    d_t_machine=d_t_machine,
-                                    preserve_sent=safety.recovery_ticks > 0,
+                                    d_t_machine=head_delta,
+                                    preserve_sent=safety.in_recovery,
                                 )
                             else:
                                 work_pose_missing = require_live_work_pose
@@ -143,6 +162,7 @@ def main() -> None:
                             baseline_ready=encoder.baseline_ready,
                             head_speed_mm_s=head_speed,
                             link_ok=streamer.link_ok,
+                            now_sec=now,
                             snap=(
                                 mismatch_report is not None and mismatch_report.mode == "snap"
                             ),
@@ -154,6 +174,28 @@ def main() -> None:
                         motor_map=comp_config.motor_map,
                     )
                     streamer.send_message(message)
+                    step_mm, step_deg = step_monitor.observe(last_sent, decision.offset, now)
+                    last_sent = decision.offset
+
+                    if logger is not None:
+                        logger.record(
+                            now_sec=now,
+                            elapsed_sec=elapsed,
+                            pose=pose if tracking_ok else None,
+                            head_delta_machine_mm=head_delta,
+                            required=proposed if encoder.baseline_ready else None,
+                            sent=decision.offset,
+                            confidence=confidence,
+                            head_speed_mm_s=head_speed,
+                            tracking_ok=tracking_ok,
+                            baseline_ready=encoder.baseline_ready,
+                            link_ok=streamer.link_ok,
+                            safety_action=decision.action,
+                            safety_reason=decision.reason,
+                            loop_dt_ms=loop_dt_ms,
+                            step_mm=step_mm,
+                            step_deg=step_deg,
+                        )
 
                     if args.verbose and decision.reason:
                         print(f"[safety] {decision.action}: {decision.reason}")
@@ -191,22 +233,113 @@ def main() -> None:
                         if key in (27, ord("q")):
                             break
 
+                    if duration_sec is not None and elapsed >= duration_sec:
+                        print(f"run complete after {elapsed / 60.0:.1f} min")
+                        break
+
             except KeyboardInterrupt:
-                streamer.send_message(
-                    UserOffsetMessage.from_xyzbc(
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        motor_map=comp_config.motor_map,
-                    )
-                )
+                pass
             finally:
+                print(step_monitor.summary())
+                _report_standing_offset(last_sent)
                 streamer.close()
                 if work_pose_client is not None:
                     work_pose_client.close()
+                if logger is not None:
+                    logger.close()
+                    print(f"stability log: {logger.rows_written} rows -> {logger.path}")
                 cv2.destroyAllWindows()
+
+
+class StepMonitor:
+    """Tracks how big each commanded offset change is.
+
+    The controller applies a user offset as a position change inside one servo
+    cycle, so a large single-packet step is a velocity transient at the drive
+    however slowly the offset is moving on average.
+    """
+
+    def __init__(self, warn_mm: float, warn_deg: float, *, cooldown_sec: float = 1.0) -> None:
+        self.warn_mm = float(warn_mm)
+        self.warn_deg = float(warn_deg)
+        self._cooldown_sec = float(cooldown_sec)
+        self._next_warn_sec = 0.0
+        self.max_mm = 0.0
+        self.max_deg = 0.0
+        self.over_threshold = 0
+
+    def observe(
+        self,
+        previous: CncUserOffset,
+        current: CncUserOffset,
+        now_sec: float,
+    ) -> tuple[float, float]:
+        step_mm = float(
+            np.linalg.norm(
+                [current.x - previous.x, current.y - previous.y, current.z - previous.z]
+            )
+        )
+        step_deg = float(np.linalg.norm([current.b - previous.b, current.c - previous.c]))
+        self.max_mm = max(self.max_mm, step_mm)
+        self.max_deg = max(self.max_deg, step_deg)
+
+        exceeded = (self.warn_mm > 0.0 and step_mm > self.warn_mm) or (
+            self.warn_deg > 0.0 and step_deg > self.warn_deg
+        )
+        if exceeded:
+            self.over_threshold += 1
+            if now_sec >= self._next_warn_sec:
+                print(f"[step] {step_mm:.2f} mm / {step_deg:.2f} deg in one packet")
+                self._next_warn_sec = now_sec + self._cooldown_sec
+        return step_mm, step_deg
+
+    def summary(self) -> str:
+        return (
+            f"max single-packet step: {self.max_mm:.2f} mm / {self.max_deg:.2f} deg"
+            f" ({self.over_threshold} over threshold)"
+        )
+
+
+#: A standing offset above this is called out in a banner rather than one line.
+EXIT_OFFSET_WARN_MM = 5.0
+
+
+def _report_standing_offset(last_sent: CncUserOffset) -> None:
+    """Report any offset left in the controller. Never commands motion.
+
+    Zeroing on exit would move the tool by the full standing offset relative to
+    the head, which is unacceptable with a probe near the scalp. So the offset
+    is left alone and the operator clears it in Mach4 once the tool is clear.
+
+    The catch is that the tracker cannot read the controller's current offset:
+    it assumes zero at startup and sends a bare zero while waiting for the
+    baseline. So an uncleared offset becomes a single-step jump on the next run,
+    which is exactly why this warning has to be impossible to miss.
+    """
+    if offset_is_zero(last_sent):
+        return
+
+    x, y, z, b, c = last_sent.as_tuple()
+    magnitude = float(np.linalg.norm((x, y, z)))
+    values = f"X{x:+.3f} Y{y:+.3f} Z{z:+.3f} B{b:+.3f} C{c:+.3f}"
+
+    if magnitude < EXIT_OFFSET_WARN_MM:
+        print(f"standing offset left in controller ({magnitude:.2f} mm): {values}")
+        print("clear it in Mach4 before the next run.")
+        return
+
+    bar = "!" * 74
+    print(f"\n{bar}")
+    print(f"!! STANDING OFFSET LEFT IN THE CONTROLLER: {magnitude:.2f} mm")
+    print(f"!!   {values}")
+    print("!!")
+    print("!! The machine was NOT moved -- zeroing this would have dragged the tool")
+    print("!! that far relative to the head.")
+    print("!!")
+    print("!! Clear it in Mach4 once the tool is clear of the workpiece.")
+    print("!! Until you do, starting this tool again commands zero in a single step,")
+    print(f"!! which the controller applies as a {magnitude:.2f} mm jump inside one servo cycle.")
+    print(f"{bar}\n")
 
 
 def _lock_baseline(
@@ -249,6 +382,40 @@ def _resolve_tool_pose(
     if args.machine_pose:
         return MachinePose.from_sequence([float(v) for v in args.machine_pose.split(",")])
     return config.machine_pose
+
+
+def _open_stability_logger(args: argparse.Namespace) -> StabilityCsvLogger | None:
+    path = _resolve_log_path(args)
+    if path is None:
+        return None
+    logger = StabilityCsvLogger(path, rate_hz=args.log_rate_hz).open()
+    print(f"stability log -> {path} at {args.log_rate_hz:g} Hz")
+    return logger
+
+
+def _resolve_log_path(args: argparse.Namespace) -> Path | None:
+    """CSV destination for ``--log`` (always timestamped) or ``--log-csv``."""
+    if args.log is not None:
+        return _stamped(_log_target(args.log))
+    if not args.log_csv:
+        return None
+    path = Path(args.log_csv)
+    return _stamped(path) if args.log_timestamped else path
+
+
+def _log_target(value: str) -> Path:
+    """Interpret a ``--log`` value as a full CSV path or a directory to write into."""
+    if not value:
+        return DEFAULT_LOG_DIR / f"{DEFAULT_LOG_STEM}.csv"
+    path = Path(value)
+    if path.suffix and not path.is_dir():
+        return path
+    return path / f"{DEFAULT_LOG_STEM}.csv"
+
+
+def _stamped(path: Path) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return path.with_name(f"{path.stem}_{stamp}{path.suffix or '.csv'}")
 
 
 def _open_work_pose_client(
@@ -409,6 +576,42 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--capture-baseline-sec", type=float, default=2.0)
     parser.add_argument("--update-period-ms", type=float, default=None)
+    parser.add_argument(
+        "--duration-sec",
+        type=float,
+        default=None,
+        help="Stop after this many seconds (e.g. 7200 for a 2 h stability run)",
+    )
+    log_group = parser.add_mutually_exclusive_group()
+    log_group.add_argument(
+        "--log",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH_OR_DIR",
+        help=(
+            "Record head XYZ + yaw/pitch/roll and CNC XYZBC offsets to a timestamped CSV "
+            f"(default: {DEFAULT_LOG_DIR.as_posix()}/{DEFAULT_LOG_STEM}_YYYYMMDD_HHMMSS.csv); "
+            "give a directory or a .csv path to place it elsewhere"
+        ),
+    )
+    log_group.add_argument(
+        "--log-csv",
+        type=str,
+        default=None,
+        help="Record head pose + XYZBC offsets per tick to this exact CSV path",
+    )
+    parser.add_argument(
+        "--log-rate-hz",
+        type=float,
+        default=10.0,
+        help="Stability log sample rate; decimates the control loop (default: 10)",
+    )
+    parser.add_argument(
+        "--log-timestamped",
+        action="store_true",
+        help="Append YYYYMMDD_HHMMSS to the --log-csv stem",
+    )
     parser.add_argument("--ack-timeout-ms", type=float, default=2000.0)
     parser.add_argument(
         "--no-ack-watchdog",
@@ -443,6 +646,18 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Drop depth landmarks farther than this from the face depth median",
+    )
+    parser.add_argument(
+        "--step-warn-mm",
+        type=float,
+        default=1.0,
+        help="Warn when one packet moves the offset more than this (0 disables)",
+    )
+    parser.add_argument(
+        "--step-warn-deg",
+        type=float,
+        default=0.5,
+        help="Warn when one packet moves B/C more than this (0 disables)",
     )
     parser.add_argument("--view", action="store_true", help="Show live RGB pose + CNC offset panel")
     parser.add_argument("--window-name", type=str, default="Orbbec CNC Stream")

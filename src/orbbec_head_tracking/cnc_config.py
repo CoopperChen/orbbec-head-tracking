@@ -70,6 +70,12 @@ class SafetyConfig:
     head_speed_exceed_ticks: int = 3
     vmax_mm_s: tuple[float, float, float] = (60.0, 60.0, 30.0)
     vmax_deg_s: tuple[float, float] = (25.0, 25.0)
+    # Ceiling on a single packet's offset change, independent of vmax. The
+    # controller applies a user offset inside one servo cycle, so the impulse
+    # the drive sees depends on step size, not on the average velocity. Default
+    # (None) derives the ceiling from vmax x update_period_ms.
+    max_step_mm: tuple[float, float, float] | None = None
+    max_step_deg: tuple[float, float] | None = None
     require_baseline_before_stream: bool = True
     min_standoff_mm: float | None = None
     spike_multiplier: float = 10.0
@@ -77,7 +83,11 @@ class SafetyConfig:
     catch_up_multiplier: float = 3.0
     catch_up_error_mm: float = 0.5
     catch_up_error_deg: float = 0.3
+    # Minimum post-hold ramp, expressed as a count of nominal ticks. Recovery
+    # runs at least this long and then keeps going until the offset is close
+    # enough to the target that catch_up will not fire the moment it ends.
     recovery_ticks_after_hold: int = 20
+    recovery_max_sec: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -260,6 +270,28 @@ def _parse_mismatch(raw: dict[str, Any]) -> MismatchConfig:
     )
 
 
+def _optional_axis_triplet(raw: Any) -> tuple[float, float, float] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return (float(raw["x"]), float(raw["y"]), float(raw["z"]))
+    values = [float(v) for v in raw]
+    if len(values) != 3:
+        raise ValueError("expected three values for x, y, z")
+    return (values[0], values[1], values[2])
+
+
+def _optional_axis_pair(raw: Any) -> tuple[float, float] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return (float(raw["b"]), float(raw["c"]))
+    values = [float(v) for v in raw]
+    if len(values) != 2:
+        raise ValueError("expected two values for b, c")
+    return (values[0], values[1])
+
+
 def _parse_safety(raw: dict[str, Any]) -> SafetyConfig:
     vmax_mm = raw.get("vmax_mm_s", {})
     vmax_deg = raw.get("vmax_deg_s", {})
@@ -280,6 +312,8 @@ def _parse_safety(raw: dict[str, Any]) -> SafetyConfig:
             float(vmax_deg.get("b", 25.0)),
             float(vmax_deg.get("c", 25.0)),
         ),
+        max_step_mm=_optional_axis_triplet(raw.get("max_step_mm")),
+        max_step_deg=_optional_axis_pair(raw.get("max_step_deg")),
         require_baseline_before_stream=bool(raw.get("require_baseline_before_stream", True)),
         min_standoff_mm=(
             float(raw["min_standoff_mm"]) if raw.get("min_standoff_mm") is not None else None
@@ -290,6 +324,7 @@ def _parse_safety(raw: dict[str, Any]) -> SafetyConfig:
         catch_up_error_mm=float(raw.get("catch_up_error_mm", 0.5)),
         catch_up_error_deg=float(raw.get("catch_up_error_deg", 0.3)),
         recovery_ticks_after_hold=int(raw.get("recovery_ticks_after_hold", 20)),
+        recovery_max_sec=float(raw.get("recovery_max_sec", 3.0)),
     )
 
 

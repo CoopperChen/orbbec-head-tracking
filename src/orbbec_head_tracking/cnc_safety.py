@@ -6,7 +6,7 @@ from typing import Literal
 import numpy as np
 
 from .cnc_config import CncCompensationConfig, SafetyConfig
-from .cnc_offset_encoder import CncUserOffset, offset_is_zero, offset_within_exit_band
+from .cnc_offset_encoder import CncUserOffset, offset_is_zero
 
 SafetyAction = Literal["pass", "zero", "hold_last"]
 
@@ -30,31 +30,101 @@ class SafetyState:
     last_pose_time_sec: float | None = None
     filtered_head_speed_mm_s: float = 0.0
     head_speed_exceed_count: int = 0
-    recovery_ticks: int = 0
+    recovery_engaged: bool = False
+    recovery_remaining_sec: float = 0.0
+    recovery_elapsed_sec: float = 0.0
+    last_evaluate_sec: float | None = None
+
+
+#: Bounds on the measured tick, so a stalled loop cannot authorise a huge step
+#: and a zero-length tick cannot freeze the limiter.
+MIN_PERIOD_SEC = 0.001
+MAX_PERIOD_SEC = 0.25
 
 
 class CncSafetyGuards:
+    """Rate limits and guards between the vision target and the controller.
+
+    Two limits apply to every axis and the tighter one wins. ``vmax`` bounds
+    *velocity* over the measured tick; ``max_step`` bounds the *position change
+    carried by a single packet*. Both are needed: the controller applies a user
+    offset inside one servo cycle, so at a 60 ms tick an honest 60 mm/s velocity
+    limit would authorise a 3.6 mm jump, which the drive sees as a ~3600 mm/s
+    transient. The step ceiling is what protects the machine; vmax is what keeps
+    sustained motion sane once the loop runs fast enough for it to bind.
+    """
+
     def __init__(self, config: CncCompensationConfig) -> None:
         self.config = config
         self.safety: SafetyConfig = config.safety
         self._state = SafetyState()
-        self._period_sec = max(config.update_period_ms, 0.001) / 1000.0
+        self._nominal_period_sec = max(float(config.update_period_ms), 1.0) / 1000.0
+        self._period_sec = self._nominal_period_sec
+        self._step_ceiling = self._resolve_step_ceiling()
+
+    def _resolve_step_ceiling(self) -> dict[str, float]:
+        """Per-axis single-packet ceiling, defaulting to vmax x the nominal tick."""
+        configured_mm = self.safety.max_step_mm
+        configured_deg = self.safety.max_step_deg
+        ceiling: dict[str, float] = {}
+        for idx, axis in enumerate(_TRANSLATION_AXES):
+            ceiling[axis] = (
+                float(configured_mm[idx])
+                if configured_mm is not None
+                else self.safety.vmax_mm_s[idx] * self._nominal_period_sec
+            )
+        for idx, axis in enumerate(_ROTATION_AXES):
+            ceiling[axis] = (
+                float(configured_deg[idx])
+                if configured_deg is not None
+                else self.safety.vmax_deg_s[idx] * self._nominal_period_sec
+            )
+        return ceiling
+
+    @property
+    def measured_period_sec(self) -> float:
+        return self._period_sec
+
+    def _update_period(self, now_sec: float | None) -> None:
+        if now_sec is None:
+            return
+        previous = self._state.last_evaluate_sec
+        self._state.last_evaluate_sec = now_sec
+        if previous is None:
+            return
+        dt = now_sec - previous
+        if dt <= 0.0:
+            return
+        self._period_sec = min(max(dt, MIN_PERIOD_SEC), MAX_PERIOD_SEC)
 
     @property
     def last_offset(self) -> CncUserOffset:
         return self._state.last_offset
 
     @property
-    def recovery_ticks(self) -> int:
-        return self._state.recovery_ticks
+    def in_recovery(self) -> bool:
+        return self._state.recovery_engaged
+
+    @property
+    def recovery_sec_after_hold(self) -> float:
+        """``recovery_ticks_after_hold`` as the wall-clock duration it was tuned as.
+
+        The count was written against the nominal tick, so counting real ticks
+        stretched it by however much the loop was running behind.
+        """
+        return max(0, int(self.safety.recovery_ticks_after_hold)) * self._nominal_period_sec
 
     def reset(self) -> None:
         self._state = SafetyState()
 
     def notify_hold(self, reason: str) -> None:
         """Arm a gentle recovery ramp after hold_last (spike, tracking loss, etc.)."""
-        ticks = max(0, int(self.safety.recovery_ticks_after_hold))
-        self._state.recovery_ticks = max(self._state.recovery_ticks, ticks)
+        duration = self.recovery_sec_after_hold
+        if duration > 0.0:
+            self._state.recovery_engaged = True
+            self._state.recovery_remaining_sec = max(
+                self._state.recovery_remaining_sec, duration
+            )
         if reason in ("tracking_lost", "low_confidence"):
             self._state.last_proposed = CncUserOffset(
                 x=self._state.last_offset.x,
@@ -67,9 +137,11 @@ class CncSafetyGuards:
     def _max_step(self, axis: str) -> float:
         if axis in _TRANSLATION_AXES:
             idx = {"x": 0, "y": 1, "z": 2}[axis]
-            return self.safety.vmax_mm_s[idx] * self._period_sec
-        idx = {"b": 0, "c": 1}[axis]
-        return self.safety.vmax_deg_s[idx] * self._period_sec
+            velocity_limited = self.safety.vmax_mm_s[idx] * self._period_sec
+        else:
+            idx = {"b": 0, "c": 1}[axis]
+            velocity_limited = self.safety.vmax_deg_s[idx] * self._period_sec
+        return min(velocity_limited, self._step_ceiling[axis])
 
     def _axis_limits(self, axis: str) -> tuple[float, float]:
         return self.config.axis_limits.as_dict()[axis]
@@ -107,7 +179,7 @@ class CncSafetyGuards:
 
     def _sanitise_target(self, proposed: CncUserOffset) -> CncUserOffset:
         """During recovery, never leap toward a limit-saturated vision target."""
-        if self._state.recovery_ticks <= 0:
+        if not self._state.recovery_engaged:
             return proposed
         prev = self._state.last_offset
         values: dict[str, float] = {}
@@ -138,17 +210,9 @@ class CncSafetyGuards:
                 return False
         return True
 
-    def _should_catch_up(self, proposed: CncUserOffset, vision: CncUserOffset) -> bool:
-        if self._state.recovery_ticks > 0:
-            return False
-        if self.safety.catch_up_multiplier <= 1.0:
-            return False
-        if self._offset_at_limit(proposed):
-            return False
-        if not self._vision_stable(vision):
-            return False
+    def _lag(self, proposed: CncUserOffset) -> tuple[float, float]:
         sent = self._state.last_offset
-        translation_lag = float(
+        translation = float(
             np.linalg.norm(
                 [
                     proposed.x - sent.x,
@@ -157,12 +221,61 @@ class CncSafetyGuards:
                 ]
             )
         )
-        rotation_lag = float(
-            np.linalg.norm([proposed.b - sent.b, proposed.c - sent.c])
+        rotation = float(np.linalg.norm([proposed.b - sent.b, proposed.c - sent.c]))
+        return translation, rotation
+
+    def _lag_would_trigger_catch_up(self, proposed: CncUserOffset) -> bool:
+        translation, rotation = self._lag(proposed)
+        return (
+            translation >= self.safety.catch_up_error_mm
+            or rotation >= self.safety.catch_up_error_deg
         )
-        if translation_lag >= self.safety.catch_up_error_mm:
+
+    def _consume_recovery(self, target: CncUserOffset) -> bool:
+        """Advance the post-hold ramp by one tick and report whether it is still on.
+
+        Recovery outlives its minimum duration whenever the offset is still far
+        enough behind the target that catch_up would fire the instant it ended.
+        Otherwise every hold ends the same way: a slow ramp that stops short,
+        immediately followed by a burst at ``catch_up_multiplier`` -- the exact
+        transient the ramp existed to avoid.
+
+        ``recovery_max_sec`` is the escape hatch for a target that keeps running
+        away, and deliberately restores normal control (catch_up included)
+        rather than letting recovery latch on forever.
+        """
+        state = self._state
+        if not state.recovery_engaged:
+            return False
+        state.recovery_elapsed_sec += self._period_sec
+        state.recovery_remaining_sec -= self._period_sec
+        if state.recovery_elapsed_sec >= self.safety.recovery_max_sec:
+            self._end_recovery()
+            return False
+        if state.recovery_remaining_sec > 0.0:
             return True
-        return rotation_lag >= self.safety.catch_up_error_deg
+        if self._lag_would_trigger_catch_up(target):
+            return True
+        self._end_recovery()
+        return False
+
+    def _end_recovery(self) -> None:
+        self._state.recovery_engaged = False
+        self._state.recovery_remaining_sec = 0.0
+        self._state.recovery_elapsed_sec = 0.0
+
+    def _should_catch_up(self, proposed: CncUserOffset, vision: CncUserOffset) -> bool:
+        if self._state.recovery_engaged:
+            return False
+        if offset_is_zero(proposed):
+            return False
+        if self.safety.catch_up_multiplier <= 1.0:
+            return False
+        if self._offset_at_limit(proposed):
+            return False
+        if not self._vision_stable(vision):
+            return False
+        return self._lag_would_trigger_catch_up(proposed)
 
     def _proposed_near_sent(self, proposed: CncUserOffset) -> bool:
         sent = self._state.last_offset
@@ -172,7 +285,7 @@ class CncSafetyGuards:
         return True
 
     def _reject_spike(self, proposed: CncUserOffset) -> bool:
-        if self._state.recovery_ticks > 0:
+        if self._state.recovery_engaged:
             return False
         if self.safety.spike_multiplier <= 0.0:
             return False
@@ -196,7 +309,7 @@ class CncSafetyGuards:
         self._state.last_offset = CncUserOffset.zero()
         self._state.last_proposed = None
         self._state.head_speed_exceed_count = 0
-        self._state.recovery_ticks = 0
+        self._end_recovery()
 
     def _hold_last(self, reason: str) -> SafetyDecision:
         self.notify_hold(reason)
@@ -213,7 +326,9 @@ class CncSafetyGuards:
         head_speed_mm_s: float,
         link_ok: bool = True,
         snap: bool = False,
+        now_sec: float | None = None,
     ) -> SafetyDecision:
+        self._update_period(now_sec)
         if not link_ok:
             if not offset_is_zero(self._state.last_offset):
                 return self._hold_last("udp_link_fault")
@@ -252,25 +367,21 @@ class CncSafetyGuards:
             return self._hold_last("spike_rejected")
 
         self._state.last_proposed = vision
-        if self._state.recovery_ticks > 0 and offset_is_zero(proposed):
+        if self._state.recovery_engaged and offset_is_zero(proposed):
             held = self._state.last_offset
-            self._state.recovery_ticks -= 1
+            self._consume_recovery(held)
             return SafetyDecision("pass", held, "recovery_hold")
 
         target = self._sanitise_target(proposed)
         zero_target = offset_is_zero(target)
         if zero_target:
             target = CncUserOffset.zero()
-            if offset_within_exit_band(self._state.last_offset, self.config.offset_deadband):
-                self._state.last_offset = CncUserOffset.zero()
-                self._state.recovery_ticks = 0
-                return SafetyDecision("pass", CncUserOffset.zero(), "")
+        in_recovery = self._consume_recovery(target)
         catch_up = self._should_catch_up(target, vision)
         limited = target if snap else self._rate_limit(target, catch_up=catch_up)
         self._state.last_offset = limited
-        in_recovery = self._state.recovery_ticks > 0
-        if in_recovery:
-            self._state.recovery_ticks -= 1
+        if zero_target and offset_is_zero(limited):
+            self._end_recovery()
         if snap:
             reason = "snap"
         elif zero_target:

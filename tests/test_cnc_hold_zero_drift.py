@@ -82,7 +82,7 @@ def test_recovery_ignores_zero_target_while_compensated() -> None:
         baseline_ready=True,
         head_speed_mm_s=0.0,
     )
-    assert safety.recovery_ticks > 0
+    assert safety.in_recovery
     decision = safety.evaluate(
         CncUserOffset.zero(),
         spike_reference=CncUserOffset.zero(),

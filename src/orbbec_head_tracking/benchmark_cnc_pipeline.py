@@ -113,7 +113,7 @@ def _timed_cnc_stages(
             dt_sec=period_sec,
             head_speed_mm_s=head_speed,
             d_t_machine=d_t_machine,
-            preserve_sent=safety.recovery_ticks > 0,
+            preserve_sent=safety.in_recovery,
         )
     if work_pose_missing:
         decision = SafetyDecision("hold_last", safety.last_offset, "work_pose_missing")

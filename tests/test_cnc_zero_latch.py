@@ -83,7 +83,7 @@ def test_mismatch_targets_zero_without_kp_boost() -> None:
     assert report.mode == "zero"
 
 
-def test_safety_zero_settle_snaps_small_residual() -> None:
+def test_safety_zero_settle_retires_small_residual_in_one_tick() -> None:
     config = CncCompensationConfig(
         offset_deadband=OffsetDeadbandConfig(
             exit_translation_mm=1.2,
@@ -101,7 +101,39 @@ def test_safety_zero_settle_snaps_small_residual() -> None:
         head_speed_mm_s=0.0,
     )
     assert decision.offset == CncUserOffset.zero()
-    assert decision.reason == ""
+    assert decision.reason == "zero_ramp"
+
+
+def test_safety_zero_settle_never_steps_more_than_the_rate_limit() -> None:
+    """A residual inside the deadband exit band used to snap to zero in one packet."""
+    config = CncCompensationConfig(
+        update_period_ms=10.0,
+        offset_deadband=OffsetDeadbandConfig(
+            exit_translation_mm=1.2,
+            exit_rotation_deg=1.0,
+        ),
+    )
+    safety = CncSafetyGuards(config)
+    safety._state.last_offset = CncUserOffset(1.2, 1.2, 1.2, 1.0, 1.0)
+
+    previous = safety._state.last_offset
+    steps = 0
+    while not previous == CncUserOffset.zero() and steps < 50:
+        decision = safety.evaluate(
+            CncUserOffset.zero(),
+            spike_reference=CncUserOffset.zero(),
+            tracking_ok=True,
+            confidence=1.0,
+            baseline_ready=True,
+            head_speed_mm_s=0.0,
+        )
+        assert abs(decision.offset.x - previous.x) <= 0.6 + 1e-9
+        assert abs(decision.offset.z - previous.z) <= 0.3 + 1e-9
+        previous = decision.offset
+        steps += 1
+
+    assert previous == CncUserOffset.zero()
+    assert steps > 1
 
 
 def test_safety_zero_ramp_drains_large_residual() -> None:

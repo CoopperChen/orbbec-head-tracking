@@ -80,13 +80,43 @@ orbbec-head-stream-cnc `
 - `--no-ack-watchdog` for view/dry-run without a connected controller.
 - Static pose fallback: `--machine-pose=X,Y,Z,B,C` or `machine_pose` in YAML.
 
-**Mach4 active work coordinates:** publish G54 DRO values with [`scripts/mach4_work_pose_publisher.lua`](scripts/mach4_work_pose_publisher.lua). Setup: [`docs/mach4-work-pose-udp.md`](docs/mach4-work-pose-udp.md).
+**Mach4 active work coordinates:** publish G54 DRO values with [`scripts/mach4_work_pose_publisher.lua`](scripts/mach4_work_pose_publisher.lua) (multi-target UDP: Orbbec `62100`, layout_design `record-pm` `62101`). Setup: [`docs/mach4-work-pose-udp.md`](docs/mach4-work-pose-udp.md).
 
 **Offset bring-up without camera:**
 
 ```powershell
 orbbec-cnc-offset-test --device-ip 192.168.208.35 --bind-ip 192.168.208.10
 ```
+
+### Long-run stability test
+
+Hold a head steady in front of the camera and stream for two hours while logging head pose and commanded XYZBC offsets to one CSV, then check whether the offsets drift.
+
+```powershell
+orbbec-head-stream-cnc `
+  --duration-sec 7200 `
+  --log --log-rate-hz 10 `
+  --capture-baseline-sec 5 `
+  --no-ack-watchdog
+```
+
+`--log` on its own writes `results/cnc_stream_<YYYYMMDD_HHMMSS>.csv`; pass a directory (`--log D:\runs`) or a file path (`--log results\stability.csv`) to place it elsewhere — the timestamp is always appended to the stem. Use `--log-csv path.csv` instead when you need an exact, non-timestamped filename (add `--log-timestamped` to stamp it).
+
+Add `--work-pose-udp-port 62100` (or `--machine-pose`) so B/C encoding uses the real nozzle pose; drop `--no-ack-watchdog` when the controller is connected. The run stops on its own after `--duration-sec`, and Ctrl+C does the same. Rows are flushed every ~5 s, so an interrupted run still leaves a usable log.
+
+**Shutdown never moves the machine.** A user offset keeps the tool tracking the head, so zeroing it on exit would drag the tool by the full standing offset relative to the head. Instead the offset is left in the controller and reported on stdout — as a banner above `EXIT_OFFSET_WARN_MM` (5 mm). Clear it in Mach4 once the tool is clear of the workpiece: the tracker cannot read the controller's current offset, so it assumes zero at startup and an uncleared offset becomes a single-step jump on the next run.
+
+`--log-rate-hz` decimates the control loop, which `update_period_ms: 10` paces at a nominal 100 Hz but which in practice runs at the camera rate (~30 Hz — see the latency benchmark below). Columns per sample: `t_s`, `wall_clock`, head pose (`head_x_mm`…`roll_deg`, `rvec_*`), head Δ in machine frame (`head_dx_mm`…), the encoder's required offset (`req_x`…`req_c`), the offset actually sent after mismatch and safety (`off_x`…`off_c`), plus `confidence`, `head_speed_mm_s`, `loop_dt_ms`, `step_mm`, `step_deg`, `tracking_ok`, `baseline_ready`, `link_ok`, and the safety `action`/`reason`.
+
+`loop_dt_ms` is the measured tick, and `step_mm` / `step_deg` are how far a single packet moved the offset — the controller applies a user offset inside one servo cycle, so step size is what the drive actually feels, not average velocity. `--step-warn-mm` / `--step-warn-deg` warn when a packet exceeds a threshold, and the largest step of the run is printed at shutdown.
+
+Then plot every channel against time:
+
+```powershell
+python scripts\figures\plot_stability.py --log results\cnc_stream_20260730_090000.csv
+```
+
+This writes `results/figures/<log stem>_drift.{pdf,svg,png}` (four stacked panels: CNC XYZ, CNC B/C, head ΔXYZ, head Δpitch/yaw/roll — per-bin mean with a min/max jitter envelope, tracking dropouts shaded) and `results/<log stem>_drift_summary.csv` with mean, std, peak-to-peak, and the least-squares **drift per hour** for each channel. The same drift table is printed to stdout, and each per-hour slope is repeated in the panel legends.
 
 ### Pipeline latency benchmark
 
@@ -182,6 +212,7 @@ Pose solvers (`--pose-solver`):
 | [`cnc_offset_encoder.py`](src/orbbec_head_tracking/cnc_offset_encoder.py) | Baseline capture, head Δ → `CncUserOffset` XYZBC; B/C modes; zero latch |
 | [`cnc_kinematics.py`](src/orbbec_head_tracking/cnc_kinematics.py) | 5-axis FK, tool normal, pose-aware B/C IK, XYZ tip correction |
 | [`cnc_safety.py`](src/orbbec_head_tracking/cnc_safety.py) | Rate limits, spike reject, hold-last, recovery window after loss |
+| [`cnc_stability_log.py`](src/orbbec_head_tracking/cnc_stability_log.py) | Long-run CSV logger; drift slope / spread analysis helpers |
 | [`cnc_mismatch.py`](src/orbbec_head_tracking/cnc_mismatch.py) | Required vs sent offset tracking; optional snap / integral correction |
 | [`cnc_protocol.py`](src/orbbec_head_tracking/cnc_protocol.py) | `MSG_SET_AXIS_USEROFFSET` pack/unpack (48-byte UDP), motor map |
 | [`cnc_udp_streamer.py`](src/orbbec_head_tracking/cnc_udp_streamer.py) | UDP bind/send, ACK watchdog, link status |
@@ -222,6 +253,7 @@ Diagram: [`docs/cnc-udp-pipeline.md`](docs/cnc-udp-pipeline.md) · Vision-only: 
 | [`scripts/check_orbbec_device.py`](scripts/check_orbbec_device.py) | List connected Orbbec devices |
 | [`scripts/mach4_work_pose_publisher.lua`](scripts/mach4_work_pose_publisher.lua) | Mach4 `mc.mcAxisGetPos` → UDP JSON |
 | [`scripts/pipeline_demos/`](scripts/pipeline_demos/) | Stage-by-stage viewers: RGB, depth, align, landmarks, pose (`demo_all.py`) |
+| [`scripts/figures/plot_stability.py`](scripts/figures/plot_stability.py) | Drift plot + summary CSV from a `--log` stability run |
 
 ## Tests
 
@@ -244,6 +276,7 @@ python -m pytest tests/ -q --ignore=tests/test_tracker_integration.py
 | `test_cnc_zero_latch.py` | Per-axis zero hysteresis |
 | `test_cnc_work_pose_client.py` | Mach4 work-pose UDP parser |
 | `test_cnc_offset_test.py` | Offset test CLI helpers |
+| `test_cnc_stability_log.py` | Stability CSV writer, rate limiting, drift statistics |
 | `test_pipeline_timing.py` | Benchmark CSV writer and summary stats |
 
 ## Architecture notes
