@@ -1,0 +1,129 @@
+# Quiet / clinical CNC compensation profile.
+#
+# Same machine calibration as cnc_compensation_example.yaml, but tuned to stop
+# catch_up thrash when the vision loop runs slower than update_period_ms
+# (often ~100–125 ms in practice). Trade: offsets lag the head more; packets
+# stay small so the drive is quieter.
+#
+# Use with:
+#   orbbec-head-stream-cnc --calibration config/cnc_compensation_quiet.yaml --log
+#
+# Success check in the CSV: safety_reason=catch_up near 0%, step_mm mostly <= 0.25.
+
+machine:
+  a_mm: 180.7
+  d_mm: 57.59
+  gap_size_mm: 15.0
+  calgap_z_mm: 26.62
+  c0_deg: 90
+  b0_deg: 0
+
+# Camera at the +X machine boundary, optical axis toward -X (subject/head faces +X).
+# OpenCV camera frame: +X right, +Y down, +Z forward (into scene).
+# Assumes camera mounted upright with top toward machine +Z.
+camera_extrinsic:
+  rotation:
+    - [0.0, 0.0, -1.0]
+    - [1.0, 0.0, 0.0]
+    - [0.0, -1.0, 0.0]
+
+reference_normal: [0.0, 0.0, 1.0]  # machine frame fallback when pose normal is degenerate
+
+# B/C: stable camera-rvec baseline + small pose-aware Jacobian correction.
+# Nozzle pose: live from Mach4 work_pose_udp, or fallback machine_pose below.
+bc_mode: tool_normal_ik
+bc_camera_rvec_mapping:
+  b: z
+  c: y
+
+# B/C offset sign vs head rotation (HICON convention).
+bc_axis_sign:
+  b: -1
+  c: -1
+
+axis_limits:
+  x_mm: [-50, 50]
+  y_mm: [-50, 50]
+  z_mm: [-30, 30]
+  b_deg: [-15, 15]
+  c_deg: [-15, 15]
+
+mm_to_axis_unit: 1.0
+deg_to_axis_unit: 1.0
+solver: decoupled
+offset_mode: follow
+update_period_ms: 10
+
+# Live active work coordinates from Mach4 (mc.mcAxisGetPos) over UDP JSON.
+# Disabled: streamer uses fallback machine_pose below. Set port: 62100 to re-enable.
+work_pose_udp:
+  port: null
+  bind_ip: 0.0.0.0
+  stale_ms: 500
+
+# Fallback nozzle pose when Mach4 UDP is off or stale.
+machine_pose: [117.4424, 116.5834, -14.2, 61.5690, 20.7155]
+
+# HICON motor indices (0-7). This machine drives X with two motors.
+motor_map:
+  x: [0, 3]
+  y: [1]
+  z: [2]
+  b: [4]
+  c: [5]
+
+safety:
+  min_confidence: 0.6
+  on_tracking_loss: hold_last
+  on_low_confidence: hold_last
+  on_head_speed_exceeded: hold_last
+  max_head_speed_mm_s: 80
+  head_speed_filter_alpha: 0.25
+  head_speed_exceed_ticks: 3
+  # Half the aggressive profile: quieter sustained motion near the scalp.
+  vmax_mm_s:
+    x: 30
+    y: 30
+    z: 15
+  vmax_deg_s:
+    b: 12
+    c: 12
+  # Hard per-packet ceiling. Independent of vmax and of catch_up: this is what
+  # stops 1.5–2.7 mm catch_up bursts when the loop is slow.
+  max_step_mm:
+    x: 0.25
+    y: 0.25
+    z: 0.15
+  max_step_deg:
+    b: 0.10
+    c: 0.10
+  spike_multiplier: 10
+  spike_axes: [x, y, z, b, c]
+  # Disable catch_up bursts. The aggressive profile (multiplier 3.0, error 0.5 mm)
+  # armed on ~42% of samples when the loop ran at ~125 ms; that was the thrash.
+  catch_up_multiplier: 1.0
+  catch_up_error_mm: 2.0
+  catch_up_error_deg: 1.0
+  recovery_ticks_after_hold: 20
+  recovery_max_sec: 3.0
+  require_baseline_before_stream: true
+
+mismatch:
+  enabled: true
+  kp: 0.0
+  ki: 0.0
+  integral_limit_mm: 10
+  integral_limit_deg: 10
+  recovery_ticks_after_hold: 10
+  snap_enabled: false
+  snap_head_speed_mm_s: 5
+  snap_error_mm: 2.0
+  # fault_error_mm: 15
+
+# Wider deadband: ignore sub-mm pose jitter instead of chasing it.
+offset_deadband:
+  enabled: true
+  enter_translation_mm: 1.0
+  exit_translation_mm: 2.0
+  enter_rotation_deg: 0.8
+  exit_rotation_deg: 1.5

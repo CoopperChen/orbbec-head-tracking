@@ -74,6 +74,14 @@ orbbec-head-stream-cnc `
 
 `--calibration` defaults to `config/cnc_compensation_example.yaml` (cwd, else repo root). Override with `--calibration path\to\file.yaml`.
 
+For quieter motion (less catch-up thrash when the vision loop is slow), use the clinical profile:
+
+```powershell
+orbbec-head-stream-cnc --calibration config/cnc_compensation_quiet.yaml --log
+```
+
+That profile disables catch-up bursts, caps each packet at 0.25 mm / 0.15 mm (XY/Z), halves vmax, and widens the offset deadband. Expect more lag behind a moving head; check the log for `catch_up` near 0% and `step_mm` mostly ≤ 0.25.
+
 - **Follow** mode (default): offsets move the machine with the head so the nozzle stays on the scalp trace.
 - Default HICON UDP: controller `192.168.208.35`, local bind `192.168.208.10` (`--device-ip` / `--bind-ip` to override).
 - On tracking loss, spike rejection, or link fault: **hold last offset** (not a blind zero flash). See `safety` in the YAML.
@@ -165,6 +173,7 @@ Without activating the venv:
 ```
 config/
   cnc_compensation_example.yaml   # CNC calibration, limits, safety, motor map
+  cnc_compensation_quiet.yaml     # Same calibration; quieter safety (no catch-up thrash)
 docs/
   cnc-udp-pipeline.md           # Production UDP pipeline diagram
   face-tracking-pipeline.md     # Vision-only pipeline diagram
