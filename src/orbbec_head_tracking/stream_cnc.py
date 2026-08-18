@@ -502,7 +502,7 @@ def _build_tracker_config(args: argparse.Namespace) -> TrackerConfig:
 
 def _default_calibration_path() -> str:
     """Prefer cwd config/, else repo-root config/ next to the package source tree."""
-    name = "cnc_compensation_example.yaml"
+    name = "cnc_compensation_quiet.yaml"
     candidates = (
         Path("config") / name,
         Path(__file__).resolve().parents[2] / "config" / name,
@@ -558,7 +558,7 @@ def _parse_args() -> argparse.Namespace:
         "--calibration",
         type=str,
         default=_default_calibration_path(),
-        help="CNC compensation YAML (default: config/cnc_compensation_example.yaml)",
+        help="CNC compensation YAML (default: config/cnc_compensation_quiet.yaml)",
     )
     parser.add_argument("--machine-pose", type=str, default=None, help="Fallback X,Y,Z,B,C work pose")
     parser.add_argument(

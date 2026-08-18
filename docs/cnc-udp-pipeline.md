@@ -5,7 +5,7 @@ End-to-end path for `orbbec-head-stream-cnc`: Orbbec Gemini 2L head tracking, XY
 Entry point:
 
 ```powershell
-orbbec-head-stream-cnc --calibration config/cnc_compensation_example.yaml --view
+orbbec-head-stream-cnc --view
 ```
 
 ## Publication figure (orthogonal, horizontal)

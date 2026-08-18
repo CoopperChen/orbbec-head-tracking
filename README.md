@@ -72,15 +72,9 @@ orbbec-head-stream-cnc `
   --view
 ```
 
-`--calibration` defaults to `config/cnc_compensation_example.yaml` (cwd, else repo root). Override with `--calibration path\to\file.yaml`.
+`--calibration` defaults to `config/cnc_compensation_quiet.yaml` (cwd, else repo root). `--human-profile` is on by default. Override with `--calibration path\to\file.yaml` or `--no-human-profile`.
 
-For quieter motion (less catch-up thrash when the vision loop is slow), use the clinical profile:
-
-```powershell
-orbbec-head-stream-cnc --calibration config/cnc_compensation_quiet.yaml --log
-```
-
-That profile disables catch-up bursts, caps each packet at 0.25 mm / 0.15 mm (XY/Z), halves vmax, and widens the offset deadband. Expect more lag behind a moving head; check the log for `catch_up` near 0% and `step_mm` mostly ≤ 0.25.
+The quiet profile disables catch-up bursts, caps each packet at 0.25 mm / 0.15 mm (XY/Z), halves vmax, and widens the offset deadband. Expect more lag behind a moving head; check the log for `catch_up` near 0% and `step_mm` mostly ≤ 0.25. For faster catch-up when the vision loop keeps pace, use `config/cnc_compensation_example.yaml`.
 
 - **Follow** mode (default): offsets move the machine with the head so the nozzle stays on the scalp trace.
 - Default HICON UDP: controller `192.168.208.35`, local bind `192.168.208.10` (`--device-ip` / `--bind-ip` to override).
@@ -139,7 +133,6 @@ pip install -e ".[cnc,dev]"
 
 ```powershell
 orbbec-cnc-pipeline-benchmark `
-  --calibration config/cnc_compensation_example.yaml `
   --loops 300 --warmup 30 `
   --output results/pipeline_timing.csv `
   --summary results/pipeline_timing_summary.csv `
@@ -165,15 +158,15 @@ All loops are written to CSV (including warmup). The stdout summary excludes the
 Without activating the venv:
 
 ```powershell
-& ".\.venv\Scripts\orbbec-cnc-pipeline-benchmark.exe" --calibration config/cnc_compensation_example.yaml
+& ".\.venv\Scripts\orbbec-cnc-pipeline-benchmark.exe"
 ```
 
 ## Project layout
 
 ```
 config/
-  cnc_compensation_example.yaml   # CNC calibration, limits, safety, motor map
-  cnc_compensation_quiet.yaml     # Same calibration; quieter safety (no catch-up thrash)
+  cnc_compensation_quiet.yaml     # Default CNC calibration; quieter safety (no catch-up thrash)
+  cnc_compensation_example.yaml   # Same machine calibration; faster catch-up / higher vmax
 docs/
   cnc-udp-pipeline.md           # Production UDP pipeline diagram
   face-tracking-pipeline.md     # Vision-only pipeline diagram
@@ -240,7 +233,7 @@ Diagram: [`docs/cnc-udp-pipeline.md`](docs/cnc-udp-pipeline.md) · Vision-only: 
 
 ## Configuration
 
-[`config/cnc_compensation_example.yaml`](config/cnc_compensation_example.yaml) — key sections:
+[`config/cnc_compensation_quiet.yaml`](config/cnc_compensation_quiet.yaml) is the default calibration; [`config/cnc_compensation_example.yaml`](config/cnc_compensation_example.yaml) is the same machine geometry with faster catch-up. Key sections:
 
 | Section | Purpose |
 |---------|---------|

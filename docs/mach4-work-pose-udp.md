@@ -5,7 +5,7 @@ Publish **active work coordinates** (G54/G55… DRO values, not machine coordina
 ## 1. Mach4 (Lua)
 
 1. Copy [`scripts/mach4_work_pose_publisher.lua`](../scripts/mach4_work_pose_publisher.lua) into your Mach4 profile macros folder, or paste its body into the profile **PLC** script.
-2. Set `TARGET_IP` to the Orbbec tracking PC (same host as `--bind-ip` for HICON UDP).
+2. Set each entry in `TARGETS` to the consumer PC(s) on your LAN (see [Sharing with layout_design record-pm](#sharing-with-layout_design-record-pm) below).
 3. Ensure **LuaSocket** is available to Mach4 (`socket.dll` under the Mach4 `api/lua` tree).
 4. Call `PublishWorkPoseUdp()` every PLC cycle (default ~200 ms) or from a faster timer.
 
@@ -15,7 +15,6 @@ The script uses `mc.mcAxisGetPos()` — Mach4’s **work-coordinate** position f
 
 ```powershell
 orbbec-head-stream-cnc `
-  --calibration config/cnc_compensation_example.yaml `
   --work-pose-udp-port 62100 `
   --view
 ```
@@ -49,3 +48,14 @@ Options:
 - CNC status panel shows `work pose: live (... ms)` when packets arrive.
 - Same panel lists **work X/Y/Z** and **work B/C** (live Mach4 or YAML/`--machine-pose` fallback).
 - With `--verbose`, stale/missing pose falls back to static YAML/`--machine-pose`.
+
+## Sharing with layout_design record-pm
+
+Orbbec CNC streaming and layout_design landmark capture both need the same Mach4 work pose, but **UDP unicast cannot share one listen port** between two processes on the same PC. Use the multi-target publisher in [`scripts/mach4_work_pose_publisher.lua`](../scripts/mach4_work_pose_publisher.lua) (or the synced copy under layout_design `scripts/`):
+
+| Consumer | Listen port | Command |
+|----------|-------------|---------|
+| Orbbec `orbbec-head-stream-cnc` | `62100` (default when enabled) | `--work-pose-udp-port 62100` |
+| layout_design `record-pm` | `62101` | `python -m app record-pm --subject <id> --port 62101` |
+
+Mach4 publishes identical JSON to both targets every cycle. Orbbec keeps port `62100`; point `record-pm` at `62101` (or change layout_design’s default there if you prefer).

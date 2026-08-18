@@ -5,8 +5,9 @@
 # (often ~100–125 ms in practice). Trade: offsets lag the head more; packets
 # stay small so the drive is quieter.
 #
+# Default calibration for orbbec-head-stream-cnc (human-profile on by default).
 # Use with:
-#   orbbec-head-stream-cnc --calibration config/cnc_compensation_quiet.yaml --log
+#   orbbec-head-stream-cnc --log
 #
 # Success check in the CSV: safety_reason=catch_up near 0%, step_mm mostly <= 0.25.
 

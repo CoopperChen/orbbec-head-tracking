@@ -23,6 +23,7 @@ from .pipeline_timing import (
 from .stream_cnc import (
     _build_compensation_config,
     _build_tracker_config,
+    _default_calibration_path,
     _lock_baseline,
     _open_work_pose_client,
     _resolve_tool_pose,
@@ -304,7 +305,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--device-ip", type=str, default="192.168.208.35")
     parser.add_argument("--bind-ip", type=str, default="192.168.208.10")
     parser.add_argument("--device-port", type=int, default=62095)
-    parser.add_argument("--calibration", type=str, default=None)
+    parser.add_argument(
+        "--calibration",
+        type=str,
+        default=_default_calibration_path(),
+        help="CNC compensation YAML (default: config/cnc_compensation_quiet.yaml)",
+    )
     parser.add_argument("--machine-pose", type=str, default=None)
     parser.add_argument("--work-pose-udp-port", type=int, default=None)
     parser.add_argument("--work-pose-bind-ip", type=str, default=None)
