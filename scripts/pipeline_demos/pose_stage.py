@@ -7,6 +7,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from orbbec_head_tracking.geometry import DepthRangeMedian, translation_on_nose_ray_mm
 from orbbec_head_tracking.tracker import (
     FACE_3D_MODEL,
     HeadPose,
@@ -41,6 +42,9 @@ class PoseEstimator:
         self.missed_pose_count = 0
         self.previous_raw_rotation_vector: np.ndarray | None = None
         self.previous_raw_translation_vector_mm: np.ndarray | None = None
+        self.depth_range_filter = DepthRangeMedian(
+            int(getattr(self.config, "depth_range_median_frames", 5))
+        )
 
     def estimate(
         self,
@@ -52,7 +56,7 @@ class PoseEstimator:
         points_2d = _landmarks_to_points(face_landmarks, image_width, image_height)
 
         if self.config.pose_solver == "depth-rigid":
-            object_points, camera_points, sampled_depth = _points_to_camera_3d(
+            object_points, camera_points, sampled_depth, fit_weights = _points_to_camera_3d(
                 points_2d,
                 depth_mm,
                 self.camera_matrix,
@@ -61,7 +65,16 @@ class PoseEstimator:
             if len(camera_points) < self.config.min_depth_points:
                 self._mark_pose_missed()
                 return TrackingFrame(color_bgr=color_bgr, depth_mm=depth_mm, pose=None)
-            rvec, tvec = _fit_rigid_transform(object_points, camera_points)
+            rvec, tvec = _fit_rigid_transform(object_points, camera_points, fit_weights)
+            nose_translation = translation_on_nose_ray_mm(
+                points_2d,
+                float(sampled_depth[0]),
+                self.camera_matrix,
+                self.depth_range_filter,
+                nose_row=0,
+            )
+            if nose_translation is not None:
+                tvec = nose_translation.reshape(3, 1)
             inliers = np.arange(len(camera_points), dtype=np.int32).reshape(-1, 1)
         else:
             sampled_depth = _sample_depth(depth_mm, points_2d)
@@ -123,6 +136,7 @@ class PoseEstimator:
             self.pose_smoother.reset()
             self.previous_raw_rotation_vector = None
             self.previous_raw_translation_vector_mm = None
+            self.depth_range_filter.reset()
 
 
 def annotate_solver_depths(canvas: np.ndarray, frame: TrackingFrame) -> None:

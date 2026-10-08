@@ -23,6 +23,7 @@ class TrackerConfig:
     pose_solver: PoseSolver = "depth-rigid"
     min_depth_points: int = 4
     depth_sample_radius_px: int = 2
+    depth_range_median_frames: int = 5
     max_reprojection_error_px: float = 12.0
     max_landmark_depth_deviation_mm: float = 120.0
     refine_with_pnp_after_depth: bool = True
@@ -59,3 +60,5 @@ class TrackerConfig:
             raise ValueError("pose_solver must be depth-rigid, pnp, or hybrid")
         if not 4 <= self.min_depth_points <= len(LANDMARK_INDICES):
             raise ValueError("min_depth_points must be between 4 and landmark count")
+        if self.depth_range_median_frames < 1:
+            raise ValueError("depth_range_median_frames must be at least 1")

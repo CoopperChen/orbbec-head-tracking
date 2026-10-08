@@ -105,6 +105,75 @@ def stabilize_translation_mm(
     return (previous + delta).astype(np.float32)
 
 
+class DepthRangeMedian:
+    """Causal median of recent face-range samples. Rejects single-frame depth spikes."""
+
+    def __init__(self, window: int = 5) -> None:
+        self.window = max(1, int(window))
+        self._values: list[float] = []
+
+    def reset(self) -> None:
+        self._values.clear()
+
+    def update(self, depth_mm: float) -> float:
+        value = float(depth_mm)
+        if not np.isfinite(value) or value <= 0.0:
+            if not self._values:
+                return value
+            return float(np.median(np.asarray(self._values, dtype=np.float64)))
+        self._values.append(value)
+        extra = len(self._values) - self.window
+        if extra > 0:
+            del self._values[:extra]
+        return float(np.median(np.asarray(self._values, dtype=np.float64)))
+
+
+def median_positive_depth_mm(depths_mm: np.ndarray) -> float | None:
+    depths = np.asarray(depths_mm, dtype=np.float64).reshape(-1)
+    valid = depths[np.isfinite(depths) & (depths > 0.0)]
+    if valid.size == 0:
+        return None
+    return float(np.median(valid))
+
+
+def backproject_mm(
+    point_xy: np.ndarray,
+    depth_mm: float,
+    camera_matrix: np.ndarray,
+) -> np.ndarray:
+    """Camera-frame point on the pixel ray at depth_mm. X right, Y down, Z forward."""
+    fx = float(camera_matrix[0, 0])
+    fy = float(camera_matrix[1, 1])
+    cx = float(camera_matrix[0, 2])
+    cy = float(camera_matrix[1, 2])
+    u = float(point_xy[0])
+    v = float(point_xy[1])
+    z_mm = float(depth_mm)
+    return np.array(
+        [(u - cx) * z_mm / fx, (v - cy) * z_mm / fy, z_mm],
+        dtype=np.float32,
+    )
+
+
+def translation_on_nose_ray_mm(
+    points_2d: np.ndarray,
+    nose_depth_mm: float,
+    camera_matrix: np.ndarray,
+    range_filter: DepthRangeMedian,
+    nose_row: int = 0,
+) -> np.ndarray | None:
+    """Place the nose landmark on its image ray at the filtered nose depth.
+
+    Range comes only from the nose sample. Other landmark depths stay in the
+    rotation fit, so a turn cannot shift Z by bringing a different part of the
+    face into the median. An invalid nose sample holds the last filtered range.
+    """
+    filtered_mm = range_filter.update(float(nose_depth_mm))
+    if not np.isfinite(filtered_mm) or filtered_mm <= 0.0:
+        return None
+    return backproject_mm(points_2d[int(nose_row)], filtered_mm, camera_matrix)
+
+
 def depth_inlier_mask(depths_mm: np.ndarray, max_deviation_mm: float) -> np.ndarray:
     depths = np.asarray(depths_mm, dtype=np.float64).reshape(-1)
     valid = np.isfinite(depths) & (depths > 0.0)

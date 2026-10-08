@@ -4,12 +4,16 @@ import numpy as np
 import pytest
 
 from orbbec_head_tracking.geometry import (
+    DepthRangeMedian,
+    backproject_mm,
     depth_inlier_mask,
+    median_positive_depth_mm,
     rotation_angle_deg,
     rotation_matrix_to_euler_degrees,
     slerp_rotation_matrices,
     stabilize_rotation_matrix,
     stabilize_translation_mm,
+    translation_on_nose_ray_mm,
 )
 from orbbec_head_tracking.smoothing import PoseSmoother
 from orbbec_head_tracking.types import HeadPose
@@ -85,3 +89,50 @@ def test_slerp_rotation_matrices_endpoints() -> None:
     assert np.allclose(mid, r0)
     end = slerp_rotation_matrices(r0, r1, 1.0)
     assert rotation_angle_deg(end, r1) < 0.5
+
+
+def _test_camera_matrix() -> np.ndarray:
+    return np.array(
+        [[800.0, 0.0, 640.0], [0.0, 800.0, 360.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+
+
+def test_backproject_mm_principal_point_and_off_axis() -> None:
+    camera = _test_camera_matrix()
+    on_axis = backproject_mm(np.array([640.0, 360.0]), 500.0, camera)
+    assert on_axis.tolist() == pytest.approx([0.0, 0.0, 500.0])
+    off_axis = backproject_mm(np.array([720.0, 360.0]), 500.0, camera)
+    assert off_axis.tolist() == pytest.approx([50.0, 0.0, 500.0])
+
+
+def test_depth_range_median_rejects_single_frame_spike() -> None:
+    depth_filter = DepthRangeMedian(5)
+    filtered = [depth_filter.update(value) for value in (500.0, 500.0, 500.0, 800.0, 500.0)]
+    assert filtered[3] == pytest.approx(500.0)
+    assert filtered[4] == pytest.approx(500.0)
+    depth_filter.reset()
+    assert depth_filter.update(420.0) == pytest.approx(420.0)
+
+
+def test_translation_on_nose_ray_ignores_depth_spike() -> None:
+    camera = _test_camera_matrix()
+    points_2d = np.array(
+        [
+            [720.0, 360.0],
+            [700.0, 500.0],
+            [500.0, 300.0],
+            [900.0, 300.0],
+        ],
+        dtype=np.float32,
+    )
+    depth_filter = DepthRangeMedian(5)
+    for _ in range(3):
+        translation_on_nose_ray_mm(points_2d, 500.0, camera, depth_filter)
+    spiked = translation_on_nose_ray_mm(points_2d, 800.0, camera, depth_filter)
+    assert spiked is not None
+    assert spiked.tolist() == pytest.approx([50.0, 0.0, 500.0])
+    held = translation_on_nose_ray_mm(points_2d, float("nan"), camera, depth_filter)
+    assert held is not None
+    assert held.tolist() == pytest.approx([50.0, 0.0, 500.0])
+    assert median_positive_depth_mm(np.array([500.0, np.nan, 0.0, 510.0])) == pytest.approx(505.0)

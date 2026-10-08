@@ -70,6 +70,7 @@ class TrackerConfig:
     pose_solver: str = "depth-rigid"
     min_depth_points: int = 4
     depth_sample_radius_px: int = 2
+    depth_range_median_frames: int = 5
     verbose_native_logs: bool = False
     suppress_mediapipe_native_stderr: bool = True
     smoothing_enabled: bool = True
@@ -447,6 +448,11 @@ class OrbbecHeadTracker:
         self.missed_pose_count = 0
         self.previous_raw_rotation_vector: np.ndarray | None = None
         self.previous_raw_translation_vector_mm: np.ndarray | None = None
+        from .geometry import DepthRangeMedian
+
+        self.depth_range_filter = DepthRangeMedian(
+            int(getattr(self.config, "depth_range_median_frames", 5))
+        )
 
     def start(self) -> None:
         if self.pipeline is not None:
@@ -493,6 +499,7 @@ class OrbbecHeadTracker:
         self.missed_pose_count = 0
         self.previous_raw_rotation_vector = None
         self.previous_raw_translation_vector_mm = None
+        self.depth_range_filter.reset()
         face_mesh = self.face_mesh
         self.face_mesh = None
         if face_mesh is not None:
@@ -591,6 +598,18 @@ class OrbbecHeadTracker:
                 self._mark_pose_missed()
                 return TrackingFrame(color_bgr=color_bgr, depth_mm=depth_mm, pose=None)
             rvec, tvec = _fit_rigid_transform_robust(object_points, camera_points, fit_weights)
+            from .geometry import translation_on_nose_ray_mm
+
+            nose_row = LANDMARK_INDICES.index(1)
+            nose_translation = translation_on_nose_ray_mm(
+                points_2d,
+                float(sampled_depth[nose_row]),
+                self.camera_matrix,
+                self.depth_range_filter,
+                nose_row=nose_row,
+            )
+            if nose_translation is not None:
+                tvec = nose_translation.reshape(3, 1)
             inliers = np.arange(len(camera_points), dtype=np.int32).reshape(-1, 1)
         else:
             sampled_depth = _sample_depth(depth_mm, points_2d)
@@ -686,6 +705,7 @@ class OrbbecHeadTracker:
             self.pose_smoother.reset()
             self.previous_raw_rotation_vector = None
             self.previous_raw_translation_vector_mm = None
+            self.depth_range_filter.reset()
 
 
 def draw_pose_overlay(
